@@ -29,4 +29,14 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
+## Other references
+
+- [btop](https://github.com/aristocratos/btop): terminal-monitor inspiration and
+  performance comparisons.
+- [socpowerbud](https://github.com/dehydratedpotato/socpowerbud): cross-checking
+  private IOReport function declarations.
+- Apple's [IOKitUser](https://github.com/apple-oss-distributions/IOKitUser) and
+  [XNU](https://github.com/apple-oss-distributions/xnu): native API definitions
+  and memory-accounting semantics.
+
 Rust dependencies retain their own license files in their distributed packages.

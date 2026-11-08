@@ -3,6 +3,7 @@ name = "mactop"
 version = "0.1.0"
 edition = "2024"
 description = "A CPU and memory-first terminal monitor for Apple Silicon"
+license = "MIT"
 publish = false
 
 [dependencies]
