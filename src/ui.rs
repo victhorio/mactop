@@ -276,14 +276,11 @@ fn memory(frame: &mut Frame, area: Rect, app: &App) {
         cumulative += bytes;
         let end = overview.x
             + ((cumulative as f64 / mem.total() as f64) * overview.width as f64).round() as u16;
-        text(
-            frame,
-            Rect::new(x, overview.y + 1, end - x, 1),
-            Line::styled(
-                symbol.repeat((end - x) as usize),
-                Style::default().fg(color),
-            ),
-        );
+        for column in x..end {
+            frame.buffer_mut()[(column, overview.y + 1)]
+                .set_symbol(symbol)
+                .set_fg(color);
+        }
         x = end;
     }
     for (offset, name, bytes, style) in [
@@ -458,21 +455,23 @@ fn processes(frame: &mut Frame, area: Rect, app: &App) {
     let header = Row::new(headings.iter().map(|heading| Cell::from(*heading)))
         .style(Style::default().fg(MUTED));
     let table_rows = processes.iter().skip(offset).take(rows).map(|process| {
-        let mut cells = vec![
+        let mut cells = Vec::with_capacity(if show_share { 5 } else { 4 });
+        cells.extend([
             Cell::from(process.pid.to_string()).style(Style::default().fg(MUTED)),
             Cell::from(process.name.as_str()).style(Style::default().fg(FG)),
             Cell::from(format!("{:.1}", process.cpu_percent))
                 .style(Style::default().fg(if app.sort == Sort::Cpu { BLUE } else { MUTED })),
             Cell::from(memory_size(process.resident_bytes))
                 .style(Style::default().fg(if app.sort == Sort::Memory { BLUE } else { FG })),
-        ];
+        ]);
         if show_share {
             let percent =
                 process.resident_bytes as f64 / app.snapshot.memory.total() as f64 * 100.0;
             let filled = ((percent / 100.0 * 17.0).round() as usize).min(17);
+            let (filled, empty) = "━━━━━━━━━━━━━━━━━".split_at(filled * "━".len());
             cells.push(Cell::from(Line::from(vec![
-                Span::styled("━".repeat(filled), Style::default().fg(BLUE)),
-                Span::styled("━".repeat(17 - filled), Style::default().fg(TRACK)),
+                Span::styled(filled, Style::default().fg(BLUE)),
+                Span::styled(empty, Style::default().fg(TRACK)),
                 Span::styled(format!(" {:>4.1}%", percent), Style::default().fg(MUTED)),
             ])));
         }
@@ -636,7 +635,12 @@ fn row(area: Rect, offset: u16) -> Rect {
 }
 
 fn text(frame: &mut Frame, area: Rect, line: Line<'_>) {
-    frame.render_widget(Paragraph::new(line), area);
+    let area = area.intersection(frame.area());
+    if !area.is_empty() {
+        frame
+            .buffer_mut()
+            .set_line(area.x, area.y, &line, area.width);
+    }
 }
 
 fn pair(frame: &mut Frame, area: Rect, left: Line<'_>, right: Line<'_>) {
@@ -651,22 +655,20 @@ fn pair(frame: &mut Frame, area: Rect, left: Line<'_>, right: Line<'_>) {
         ),
         left,
     );
-    frame.render_widget(Paragraph::new(right).alignment(Alignment::Right), area);
+    text(
+        frame,
+        Rect::new(area.right() - right_width, area.y, right_width, area.height),
+        right,
+    );
 }
 
 fn meter(frame: &mut Frame, area: Rect, percent: f64, color: Color) {
-    let filled = (percent / 100.0 * area.width as f64).round() as usize;
-    text(
-        frame,
-        area,
-        Line::from(vec![
-            Span::styled("━".repeat(filled), Style::default().fg(color)),
-            Span::styled(
-                "━".repeat(area.width as usize - filled),
-                Style::default().fg(TRACK),
-            ),
-        ]),
-    );
+    let filled = (percent / 100.0 * area.width as f64).round() as u16;
+    for column in 0..area.width {
+        frame.buffer_mut()[(area.x + column, area.y)]
+            .set_symbol("━")
+            .set_fg(if column < filled { color } else { TRACK });
+    }
 }
 
 fn chart(
