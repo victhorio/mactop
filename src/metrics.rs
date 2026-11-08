@@ -1,5 +1,10 @@
 use std::io;
 
+#[cfg(target_os = "macos")]
+mod macos;
+#[cfg(target_os = "macos")]
+pub use macos::MacSource;
+
 pub const GIB: u64 = 1024 * 1024 * 1024;
 pub const MIB: u64 = 1024 * 1024;
 
@@ -39,8 +44,9 @@ impl TierKind {
 pub struct CpuTier {
     pub kind: TierKind,
     pub cores: Vec<f64>,
-    pub frequency_ghz: f64,
-    pub max_frequency_ghz: f64,
+    /// Residency-weighted clock while active; None if idle or unavailable.
+    pub frequency_ghz: Option<f64>,
+    pub max_frequency_ghz: Option<f64>,
 }
 
 impl CpuTier {
@@ -191,8 +197,8 @@ impl MetricsSource for MockSource {
                 CpuTier {
                     kind,
                     cores,
-                    frequency_ghz: max * (0.67 + self.wave(max) * 0.12),
-                    max_frequency_ghz: max,
+                    frequency_ghz: Some(max * (0.67 + self.wave(max) * 0.12)),
+                    max_frequency_ghz: Some(max),
                 }
             })
             .collect();

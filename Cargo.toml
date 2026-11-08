@@ -9,6 +9,11 @@ publish = false
 crossterm = "0.29"
 ratatui = { version = "0.30", default-features = false, features = ["crossterm", "crossterm_0_29"] }
 
+[target.'cfg(target_os = "macos")'.dependencies]
+libc = "0.2"
+core-foundation-sys = "0.8"
+mach2 = "0.7"
+
 [profile.release]
 lto = "thin"
 strip = true

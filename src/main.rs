@@ -1,7 +1,4 @@
-use std::{
-    io,
-    time::{Duration, Instant},
-};
+use std::{io, time::Duration};
 
 use crossterm::{
     event::{
@@ -11,33 +8,44 @@ use crossterm::{
     execute,
 };
 use mactop::{
-    app::{App, HISTORY_LEN, Sort},
-    metrics::{MetricsSource, MockSource},
+    app::{App, History, Modal, Sort},
     ui,
 };
 use ratatui::layout::{Position, Rect};
 
-fn demo(source: &mut MockSource) -> io::Result<App> {
-    let mut app = App::new(source.sample()?);
-    for _ in 1..HISTORY_LEN {
-        app.ingest(source.sample()?);
-    }
-    app.demo_label = source.label();
-    Ok(app)
-}
+mod sampling;
+use sampling::{Command, Sampler};
 
 fn main() -> io::Result<()> {
-    if std::env::args().any(|arg| arg == "--help" || arg == "-h") {
-        println!(
-            "mactop — CPU & memory monitor (mock data preview)\n\nRun without arguments to open the TUI. Press ? for keys.\nMinimum preview size: 90 columns × 25 rows."
-        );
+    let (mut demo, mut sample) = (false, false);
+    for arg in std::env::args().skip(1) {
+        match arg.as_str() {
+            "--help" | "-h" => {
+                println!(
+                    "mactop — CPU & memory monitor for Apple Silicon\n\nRun without arguments for live native metrics. Press ? for keys.\n  --demo    Use synthetic fixtures instead of native measurements\n  --sample  Print one measured snapshot and exit (no terminal needed)\nMinimum size: 90 columns × 25 rows. No sudo required."
+                );
+                return Ok(());
+            }
+            "--demo" => demo = true,
+            "--sample" => sample = true,
+            _ => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("unknown argument {arg}; see --help"),
+                ));
+            }
+        }
+    }
+    let (sampler, initial) = Sampler::start(demo)?;
+    if sample {
+        println!("{:#?}", initial.snapshot);
         return Ok(());
     }
-    let mut source = MockSource::default();
-    let mut app = demo(&mut source)?;
-    let mut terminal = ratatui::init();
+    let mut app = App::new(initial.snapshot, initial.at);
+    app.demo_label = initial.demo_label;
+    let mut terminal = ratatui::try_init()?;
     let result = execute!(io::stdout(), EnableMouseCapture)
-        .and_then(|_| run(&mut terminal, &mut source, &mut app));
+        .and_then(|_| run(&mut terminal, &sampler, &mut app, initial.sequence));
     let mouse_result = execute!(io::stdout(), DisableMouseCapture);
     ratatui::restore();
     result.and(mouse_result)
@@ -45,18 +53,18 @@ fn main() -> io::Result<()> {
 
 fn run(
     terminal: &mut ratatui::DefaultTerminal,
-    source: &mut MockSource,
+    sampler: &Sampler,
     app: &mut App,
+    mut last_sequence: u64,
 ) -> io::Result<()> {
-    let interval = Duration::from_secs(1);
-    let mut next_sample = Instant::now() + interval;
     let mut dirty = true;
+    let mut disconnected = false;
     loop {
         if dirty {
             terminal.draw(|frame| ui::draw(frame, app))?;
             dirty = false;
         }
-        if event::poll(next_sample.saturating_duration_since(Instant::now()))? {
+        if event::poll(Duration::from_millis(100))? {
             match event::read()? {
                 Event::Key(key) if key.kind == KeyEventKind::Press => {
                     if key.code == KeyCode::Char('q')
@@ -65,12 +73,30 @@ fn run(
                     {
                         return Ok(());
                     }
-                    if app.help {
-                        app.help = false;
+                    if app.modal == Some(Modal::Help) {
+                        app.modal = None;
+                    } else if app.modal == Some(Modal::Frequency) {
+                        match key.code {
+                            KeyCode::Char('+' | '=' | '-') => {
+                                if let Some(interval) =
+                                    app.change_frequency(key.code != KeyCode::Char('-'))
+                                {
+                                    sampler.command(Command::Interval(interval))?;
+                                }
+                            }
+                            KeyCode::Char('x') | KeyCode::Esc => app.modal = None,
+                            _ => {}
+                        }
                     } else {
                         match key.code {
-                            KeyCode::Char('?') => app.help = true,
-                            KeyCode::Char(' ') => app.paused = !app.paused,
+                            KeyCode::Char('?') => app.modal = Some(Modal::Help),
+                            KeyCode::Char('f') => app.modal = Some(Modal::Frequency),
+                            KeyCode::Char(' ') => {
+                                app.paused = !app.paused;
+                                if !app.paused {
+                                    disconnected = true;
+                                }
+                            }
                             KeyCode::Char('p') => {
                                 app.expanded = !app.expanded;
                                 app.process_offset = 0;
@@ -86,20 +112,12 @@ fn run(
                                     app.scroll(down, processes.height.saturating_sub(3) as usize);
                                 }
                             }
-                            KeyCode::Char('d') | KeyCode::Char('t') => {
-                                if key.code == KeyCode::Char('d') {
-                                    source.cycle_scenario();
+                            KeyCode::Char('d' | 't') if app.demo_label.is_some() => {
+                                sampler.command(if key.code == KeyCode::Char('d') {
+                                    Command::Scenario
                                 } else {
-                                    source.cycle_topology();
-                                }
-                                let paused = app.paused;
-                                let expanded = app.expanded;
-                                let sort = app.sort;
-                                *app = demo(source)?;
-                                app.paused = paused;
-                                app.expanded = expanded;
-                                app.sort = sort;
-                                next_sample = Instant::now() + interval;
+                                    Command::Topology
+                                })?;
                             }
                             _ => {}
                         }
@@ -109,15 +127,16 @@ fn run(
                 Event::Mouse(mouse) if mouse.kind == MouseEventKind::Down(MouseButton::Left) => {
                     let size = terminal.size()?;
                     let area = Rect::new(0, 0, size.width, size.height);
-                    if app.help {
-                        app.help = false;
+                    if app.modal == Some(Modal::Help) {
+                        app.modal = None;
                         dirty = true;
-                    } else if size.width >= 90
+                    } else if app.modal.is_none()
+                        && size.width >= 90
                         && size.height >= 25
                         && ui::help_hint(area, app.expanded)
                             .contains(Position::new(mouse.column, mouse.row))
                     {
-                        app.help = true;
+                        app.modal = Some(Modal::Help);
                         dirty = true;
                     }
                 }
@@ -125,12 +144,32 @@ fn run(
                 _ => {}
             }
         }
-        if Instant::now() >= next_sample {
-            if !app.paused {
-                app.ingest(source.sample()?);
-                dirty = true;
+        if let Some(result) = sampler.take()? {
+            match result {
+                Ok(update) if !app.paused || update.reset => {
+                    let gap = update.sequence != last_sequence + 1 || update.delayed;
+                    last_sequence = update.sequence;
+                    if update.reset {
+                        app.history = History::default();
+                        app.process_offset = 0;
+                    }
+                    app.ingest(
+                        update.snapshot,
+                        update.at,
+                        !disconnected && !gap && !update.reset,
+                    );
+                    app.demo_label = update.demo_label;
+                    app.sampling_error = None;
+                    disconnected = false;
+                    dirty = true;
+                }
+                Err(error) => {
+                    app.sampling_error = Some(error.to_string());
+                    disconnected = true;
+                    dirty = true;
+                }
+                _ => {}
             }
-            next_sample = Instant::now() + interval;
         }
     }
 }

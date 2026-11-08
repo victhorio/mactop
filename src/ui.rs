@@ -1,5 +1,3 @@
-use std::collections::VecDeque;
-
 use ratatui::{
     Frame,
     layout::{Alignment, Constraint, Layout, Rect},
@@ -12,7 +10,7 @@ use ratatui::{
 };
 
 use crate::{
-    app::{App, Sort},
+    app::{App, HISTORY_WINDOW, History, HistorySample, Modal, Sort},
     metrics::{CpuTier, GIB, MIB, Pressure, TierKind},
 };
 
@@ -59,8 +57,10 @@ pub fn draw(frame: &mut Frame, app: &App) {
     frame.render_widget(Block::default().style(Style::default().bg(BG).fg(FG)), area);
     if area.width < 90 || area.height < 25 {
         frame.render_widget(
-            Paragraph::new("mactop\n\nThis preview needs at least 90 columns × 25 rows.\nResize the terminal; q quits.")
-                .style(Style::default().fg(FG)),
+            Paragraph::new(
+                "mactop\n\nNeeds at least 90 columns × 25 rows.\nResize the terminal; q quits.",
+            )
+            .style(Style::default().fg(FG)),
             area.inner(ratatui::layout::Margin::new(2, 2)),
         );
         return;
@@ -72,8 +72,10 @@ pub fn draw(frame: &mut Frame, app: &App) {
         memory(frame, memory_area, app);
     }
     processes(frame, process_area, app);
-    if app.help {
-        help(frame, area);
+    match app.modal {
+        Some(Modal::Help) => help(frame, area, app),
+        Some(Modal::Frequency) => frequency(frame, area, app),
+        None => {}
     }
 }
 
@@ -98,9 +100,10 @@ fn cpu(frame: &mut Frame, area: Rect, app: &App) {
         area,
         "CPU",
         format!(
-            "{} cores · {:.0}% active",
+            "{} cores · {:.0}% active · {}s",
             app.snapshot.core_count(),
-            app.snapshot.cpu_percent()
+            app.snapshot.cpu_percent(),
+            HISTORY_WINDOW.as_secs()
         ),
     );
     let count = app.snapshot.cpu.len();
@@ -126,14 +129,7 @@ fn cpu(frame: &mut Frame, area: Rect, app: &App) {
         inner.height - 3
     };
     for (i, tier) in app.snapshot.cpu.iter().enumerate() {
-        tier_view(
-            frame,
-            chunks[i],
-            tier,
-            &app.history.cpu[i].1,
-            chart_height,
-            detailed,
-        );
+        tier_view(frame, chunks[i], tier, &app.history, chart_height, detailed);
     }
 }
 
@@ -141,7 +137,7 @@ fn tier_view(
     frame: &mut Frame,
     area: Rect,
     tier: &CpuTier,
-    history: &VecDeque<f64>,
+    history: &History,
     chart_height: u16,
     detailed: bool,
 ) {
@@ -171,8 +167,13 @@ fn tier_view(
         row(area, 1),
         Line::styled(
             format!(
-                "{:.2} / {:.2} GHz",
-                tier.frequency_ghz, tier.max_frequency_ghz
+                "{} / {} GHz",
+                tier.frequency_ghz
+                    .map(|v| format!("{v:.2}"))
+                    .unwrap_or_else(|| "—".into()),
+                tier.max_frequency_ghz
+                    .map(|v| format!("{v:.2}"))
+                    .unwrap_or_else(|| "—".into())
             ),
             Style::default().fg(MUTED),
         ),
@@ -188,6 +189,14 @@ fn tier_view(
         history,
         100.0,
         color,
+        |sample| {
+            sample
+                .cpu
+                .iter()
+                .find(|(kind, _)| *kind == tier.kind)
+                .unwrap()
+                .1
+        },
     );
     if detailed {
         let core_columns = (area.width / 22).max(1) as usize;
@@ -318,7 +327,10 @@ fn memory(frame: &mut Frame, area: Rect, app: &App) {
     pair(
         frame,
         row(usage_area, 0),
-        Line::styled("Usage · 60s", Style::default().fg(MUTED)),
+        Line::styled(
+            format!("Usage · {}s", HISTORY_WINDOW.as_secs()),
+            Style::default().fg(MUTED),
+        ),
         Line::styled("0–100%", Style::default().fg(MUTED)),
     );
     line_chart(
@@ -329,7 +341,7 @@ fn memory(frame: &mut Frame, area: Rect, app: &App) {
             usage_area.width,
             usage_area.height - 1,
         ),
-        &app.history.memory_used,
+        &app.history,
         BLUE,
     );
     swap(frame, swap_area, app);
@@ -352,10 +364,9 @@ fn swap(frame: &mut Frame, area: Rect, app: &App) {
     );
     let peak_rate = app
         .history
-        .swap_in
-        .iter()
-        .chain(&app.history.swap_out)
-        .copied()
+        .points()
+        .filter(|(x, _)| *x > 0.0)
+        .map(|(_, sample)| sample.swap_in.max(sample.swap_out))
         .fold(0.0, f64::max);
     let max_rate = peak_rate.max(MIB as f64);
     let show_scale = area.height >= 5;
@@ -363,14 +374,9 @@ fn swap(frame: &mut Frame, area: Rect, app: &App) {
     let swap_columns = Layout::horizontal([Constraint::Fill(1); 2])
         .spacing(2)
         .split(area);
-    for (column, (name, value, history, color)) in swap_columns.iter().zip([
-        ("In", mem.swap_in_bytes_per_sec, &app.history.swap_in, GREEN),
-        (
-            "Out",
-            mem.swap_out_bytes_per_sec,
-            &app.history.swap_out,
-            YELLOW,
-        ),
+    for (column, (name, value, color)) in swap_columns.iter().zip([
+        ("In", mem.swap_in_bytes_per_sec, GREEN),
+        ("Out", mem.swap_out_bytes_per_sec, YELLOW),
     ]) {
         text(
             frame,
@@ -384,9 +390,16 @@ fn swap(frame: &mut Frame, area: Rect, app: &App) {
             chart(
                 frame,
                 Rect::new(column.x, area.y + 2, column.width, graph_height),
-                history,
+                &app.history,
                 max_rate,
                 color,
+                |sample| {
+                    if name == "In" {
+                        sample.swap_in
+                    } else {
+                        sample.swap_out
+                    }
+                },
             );
         }
     }
@@ -395,7 +408,11 @@ fn swap(frame: &mut Frame, area: Rect, app: &App) {
             frame,
             row(area, 2 + graph_height),
             Line::styled(
-                format!("0–{} shared · 60s", rate(max_rate)),
+                format!(
+                    "0–{} shared · {}s",
+                    rate(max_rate),
+                    HISTORY_WINDOW.as_secs()
+                ),
                 Style::default().fg(MUTED),
             ),
         );
@@ -415,7 +432,7 @@ fn processes(frame: &mut Frame, area: Rect, app: &App) {
     let offset = app.process_offset.min(processes.len().saturating_sub(rows));
     let detail = format!(
         "{}–{} / {} · {} · p {}",
-        offset + 1,
+        if processes.is_empty() { 0 } else { offset + 1 },
         (offset + rows).min(processes.len()),
         processes.len(),
         if app.sort == Sort::Cpu {
@@ -452,7 +469,7 @@ fn processes(frame: &mut Frame, area: Rect, app: &App) {
         if show_share {
             let percent =
                 process.resident_bytes as f64 / app.snapshot.memory.total() as f64 * 100.0;
-            let filled = (percent / 100.0 * 17.0).round() as usize;
+            let filled = ((percent / 100.0 * 17.0).round() as usize).min(17);
             cells.push(Cell::from(Line::from(vec![
                 Span::styled("━".repeat(filled), Style::default().fg(BLUE)),
                 Span::styled("━".repeat(17 - filled), Style::default().fg(TRACK)),
@@ -468,12 +485,28 @@ fn processes(frame: &mut Frame, area: Rect, app: &App) {
         inner,
     );
     let status = Line::styled(
-        format!(
-            " {} · {} ",
-            if app.paused { "PAUSED" } else { "MOCK" },
-            app.demo_label
-        ),
-        Style::default().fg(if app.paused { YELLOW } else { MUTED }),
+        if app.sampling_error.is_some() {
+            " STALE · collection error · ? ".into()
+        } else {
+            format!(
+                " {} · {} ",
+                if app.paused {
+                    "PAUSED"
+                } else if app.demo_label.is_some() {
+                    "MOCK"
+                } else {
+                    "LIVE"
+                },
+                app.demo_label.unwrap_or(&app.snapshot.machine)
+            )
+        },
+        Style::default().fg(if app.sampling_error.is_some() {
+            RED
+        } else if app.paused {
+            YELLOW
+        } else {
+            MUTED
+        }),
     );
     text(
         frame,
@@ -487,64 +520,110 @@ fn processes(frame: &mut Frame, area: Rect, app: &App) {
     );
 }
 
-fn help(frame: &mut Frame, area: Rect) {
+fn popup(
+    frame: &mut Frame,
+    area: Rect,
+    width: u16,
+    height: u16,
+    title: &str,
+    detail: &str,
+) -> Rect {
     let popup = Rect::new(
-        area.x + (area.width - 66) / 2,
-        area.y + (area.height - 20) / 2,
-        66,
-        20,
+        area.x + (area.width - width) / 2,
+        area.y + (area.height - height) / 2,
+        width,
+        height,
     );
     frame.render_widget(Clear, popup);
     frame.render_widget(Block::default().style(Style::default().bg(BG)), popup);
-    let inner = panel(frame, popup, "KEYS & METRICS", "any key closes".into());
-    let lines = vec![
-        Line::styled(
-            "A CPU & memory-first monitor. All data is mocked.",
-            Style::default().fg(FG).bold(),
-        ),
-        Line::raw("? / click ? Open help; any key or click closes"),
-        Line::raw("p          Expand / collapse processes"),
-        Line::raw("c / m      Sort processes by CPU / resident memory"),
-        Line::raw("↑ ↓ / j k  Scroll processes"),
-        Line::raw("space      Pause / resume sampling"),
-        Line::raw("d          Cycle everyday / CPU load / memory pressure"),
-        Line::raw("t          Cycle E+P+S / E+P / P+S demo topologies"),
-        Line::raw("q / Ctrl-C Quit"),
-        Line::raw(""),
-        Line::styled(
-            "CPU %       Active time, not frequency-scaled capacity",
-            Style::default().fg(MUTED),
-        ),
-        Line::styled(
-            "Process %   100% is one core; can exceed 100%",
-            Style::default().fg(MUTED),
-        ),
-        Line::styled(
-            "In use      App + wired + compressed; breakdown in GiB",
-            Style::default().fg(MUTED),
-        ),
-        Line::styled(
-            "RAM bar     █ in use · ▒ reclaimable cache · · free",
-            Style::default().fg(MUTED),
-        ),
-        Line::styled(
-            "Available   Cache + free; cache is safe to reclaim",
-            Style::default().fg(MUTED),
-        ),
-        Line::styled(
-            "Swap in/out Bytes per second, not allocated swap",
-            Style::default().fg(MUTED),
-        ),
-        Line::styled(
-            "Swap        Disk occupancy; Idle means no current I/O",
-            Style::default().fg(MUTED),
-        ),
-        Line::styled(
-            "60s → newest · 1s samples · memory chart 0–100%",
-            Style::default().fg(MUTED),
-        ),
+    panel(frame, popup, title, detail.into())
+}
+
+fn help(frame: &mut Frame, area: Rect, app: &App) {
+    let mut keys = vec![
+        ("p", "Expand / collapse processes"),
+        ("c / m", "Sort by CPU / memory"),
+        ("↑ ↓ / j k", "Scroll processes"),
+        ("space", "Pause / resume"),
+        ("f", "Update frequency"),
+        ("q / Ctrl-C", "Quit"),
     ];
+    if app.demo_label.is_some() {
+        keys.extend([("d", "Next demo scenario"), ("t", "Next demo topology")]);
+    }
+    let mut lines = vec![
+        Line::raw(""),
+        Line::styled("SHORTCUTS", Style::default().fg(MUTED).bold()),
+    ];
+    lines.extend(keys.into_iter().map(|(key, description)| {
+        Line::from(vec![
+            Span::styled(format!("{key:<14}"), Style::default().fg(FG).bold()),
+            Span::raw(description),
+        ])
+    }));
+    lines.extend([
+        Line::raw(""),
+        Line::styled("METRICS", Style::default().fg(MUTED).bold()),
+    ]);
+    lines.extend(
+        [
+            ("CPU", "Active time, 0–100%"),
+            ("Process CPU", "100% = one core"),
+            ("GHz", "Average while active; — = unavailable"),
+            ("In use", "App + wired + compressed"),
+            ("Available", "Reclaimable cache + free"),
+            ("Swap in/out", "Bytes/sec; swap usage is space on disk"),
+        ]
+        .into_iter()
+        .map(|(label, description)| {
+            Line::from(vec![
+                Span::styled(format!("{label:<14}"), Style::default().fg(MUTED)),
+                Span::raw(description),
+            ])
+        }),
+    );
+    if let Some(error) = &app.sampling_error {
+        lines.push(Line::raw(""));
+        lines.push(Line::styled(
+            "Collection error · showing last good sample",
+            Style::default().fg(RED),
+        ));
+        lines.push(Line::raw(error.as_str()));
+    }
+    lines.push(Line::raw(""));
+    let inner = popup(
+        frame,
+        area,
+        66,
+        lines.len() as u16 + 2,
+        "HELP",
+        "any key closes",
+    );
     frame.render_widget(Paragraph::new(lines).style(Style::default().fg(FG)), inner);
+}
+
+fn frequency(frame: &mut Frame, area: Rect, app: &App) {
+    let inner = popup(frame, area, 42, 8, "UPDATE FREQUENCY", "x close");
+    let seconds = app.update_interval.as_secs_f64();
+    let period = if seconds < 1.0 {
+        format!("Every {} ms", app.update_interval.as_millis())
+    } else {
+        format!("Every {seconds:.0} s")
+    };
+    frame.render_widget(
+        Paragraph::new(vec![
+            Line::raw(""),
+            Line::styled(
+                format!("{:.1} Hz", 1.0 / seconds),
+                Style::default().fg(FG).bold(),
+            ),
+            Line::styled(period, Style::default().fg(MUTED)),
+            Line::raw(""),
+            Line::styled("+ faster       − slower", Style::default().fg(FG)),
+        ])
+        .alignment(Alignment::Center),
+        inner,
+    );
 }
 
 fn row(area: Rect, offset: u16) -> Rect {
@@ -590,46 +669,80 @@ fn meter(frame: &mut Frame, area: Rect, percent: f64, color: Color) {
     );
 }
 
-fn chart(frame: &mut Frame, area: Rect, history: &VecDeque<f64>, max: f64, color: Color) {
-    if area.is_empty() || history.is_empty() {
+fn chart(
+    frame: &mut Frame,
+    area: Rect,
+    history: &History,
+    max: f64,
+    color: Color,
+    value: impl Fn(&HistorySample) -> f64,
+) {
+    if area.is_empty() {
         return;
     }
-    for column in 0..area.width {
-        let value = history_peak(history, column, area.width);
+    let mut peaks = vec![0.0_f64; area.width as usize];
+    let mut previous = None;
+    let scale = area.width as f64 / HISTORY_WINDOW.as_secs_f64();
+    for (x, sample) in history.points() {
+        if x > 0.0 {
+            let start = if sample.continuous {
+                previous.unwrap_or(x)
+            } else {
+                x
+            };
+            let first = ((start.max(0.0) * scale).floor() as usize).min(peaks.len() - 1);
+            let end = ((x * scale).ceil() as usize)
+                .max(first + 1)
+                .min(peaks.len());
+            // Interval maxima retain brief spikes even in narrow charts.
+            for peak in &mut peaks[first..end] {
+                *peak = peak.max(value(sample));
+            }
+        }
+        previous = Some(x);
+    }
+    for (column, value) in peaks.into_iter().enumerate() {
         let eighths = (value / max * area.height as f64 * 8.0).round() as u16;
         for y in 0..area.height {
             let level = eighths.saturating_sub((area.height - 1 - y) * 8).min(8);
-            let symbol = if level == 0 && y == area.height - 1 {
-                "─"
-            } else {
-                BARS[level as usize]
-            };
-            frame.buffer_mut()[(area.x + column, area.y + y)]
-                .set_symbol(symbol)
-                .set_fg(if level == 0 { TRACK } else { color });
+            frame.buffer_mut()[(area.x + column as u16, area.y + y)]
+                .set_symbol(BARS[level as usize])
+                .set_fg(color);
         }
     }
 }
 
-fn line_chart(frame: &mut Frame, area: Rect, history: &VecDeque<f64>, color: Color) {
-    if area.is_empty() || history.is_empty() {
+fn line_chart(frame: &mut Frame, area: Rect, history: &History, color: Color) {
+    if area.is_empty() {
         return;
     }
     let points: Vec<_> = history
+        .points()
+        .map(|(x, sample)| (x, sample.memory_used, sample.continuous))
+        .collect();
+    let visible: Vec<_> = points
         .iter()
-        .enumerate()
-        .map(|(i, value)| (i as f64, *value))
+        .filter(|p| p.0 >= 0.0)
+        .map(|p| (p.0, p.1))
         .collect();
     let canvas = Canvas::default()
         .background_color(BG)
-        .x_bounds([0.0, (history.len().max(2) - 1) as f64])
+        .x_bounds([0.0, HISTORY_WINDOW.as_secs_f64()])
         .y_bounds([0.0, 100.0])
         .paint(|ctx| {
-            ctx.draw(&Points::new(&points, color));
+            ctx.draw(&Points::new(&visible, color));
             for pair in points.windows(2) {
+                if !pair[1].2 || pair[1].0 < 0.0 {
+                    continue;
+                }
+                let (mut x1, mut y1, _) = pair[0];
+                if x1 < 0.0 {
+                    y1 += (pair[1].1 - y1) * -x1 / (pair[1].0 - x1);
+                    x1 = 0.0;
+                }
                 ctx.draw(&PlotLine {
-                    x1: pair[0].0,
-                    y1: pair[0].1,
+                    x1,
+                    y1,
                     x2: pair[1].0,
                     y2: pair[1].1,
                     color,
@@ -637,18 +750,6 @@ fn line_chart(frame: &mut Frame, area: Rect, history: &VecDeque<f64>, color: Col
             }
         });
     frame.render_widget(canvas, area);
-}
-
-fn history_peak(history: &VecDeque<f64>, column: u16, width: u16) -> f64 {
-    // Bucket maxima preserve brief spikes when the history is narrower than 60 cells.
-    let start = column as usize * history.len() / width as usize;
-    let end = ((column as usize + 1) * history.len() / width as usize).max(start + 1);
-    history
-        .iter()
-        .skip(start)
-        .take(end - start)
-        .copied()
-        .fold(0.0, f64::max)
 }
 
 fn tier_color(kind: TierKind) -> Color {

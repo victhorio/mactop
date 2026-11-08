@@ -1,5 +1,7 @@
+use std::time::{Duration, Instant};
+
 use mactop::{
-    app::{App, Sort},
+    app::{App, HISTORY_WINDOW, Modal, Sort},
     metrics::{CpuTier, GIB, MIB, MetricsSource, MockSource, Pressure, Process, TierKind},
     ui,
 };
@@ -33,7 +35,7 @@ fn render(app: &App, width: u16, height: u16) -> String {
 fn supported_sizes_show_only_available_tiers_and_keep_primary_metrics() {
     let mut source = MockSource::default();
     for labels in [[true, true, true], [true, true, false], [false, true, true]] {
-        let mut app = App::new(source.sample().unwrap());
+        let mut app = App::new(source.sample().unwrap(), Instant::now());
         for (width, height) in SIZES {
             let screen = render(&app, width, height);
             assert!(screen.lines().next().unwrap().contains("CPU"));
@@ -88,11 +90,11 @@ fn supported_sizes_show_only_available_tiers_and_keep_primary_metrics() {
             assert!(expanded.lines().last().unwrap().contains('?'));
             assert!(expanded.contains("launchd"));
             assert!(expanded.contains("collapse"));
-            app.help = true;
+            app.modal = Some(Modal::Help);
             let help = render(&app, width, height);
-            assert!(help.contains("KEYS & METRICS"));
+            assert!(help.contains("SHORTCUTS"));
             assert!(help.contains("Swap in/out"));
-            app.help = false;
+            app.modal = None;
             app.expanded = false;
         }
         source.cycle_topology();
@@ -119,7 +121,7 @@ fn in_use_headroom_and_swap_activity_are_independent() {
         snapshot.memory.cached = cache_gib * GIB;
         for pressure in [Pressure::Normal, Pressure::Critical] {
             snapshot.memory.pressure = pressure;
-            let app = App::new(snapshot.clone());
+            let app = App::new(snapshot.clone(), Instant::now());
             for (width, height) in SIZES {
                 let screen = render(&app, width, height);
                 for expected in [
@@ -160,17 +162,17 @@ fn combined_cpu_is_weighted_by_core_count_not_tier_count() {
         CpuTier {
             kind: TierKind::Efficiency,
             cores: vec![0.0],
-            frequency_ghz: 1.0,
-            max_frequency_ghz: 2.0,
+            frequency_ghz: Some(1.0),
+            max_frequency_ghz: Some(2.0),
         },
         CpuTier {
             kind: TierKind::Super,
             cores: vec![100.0; 4],
-            frequency_ghz: 4.0,
-            max_frequency_ghz: 4.5,
+            frequency_ghz: Some(4.0),
+            max_frequency_ghz: Some(4.5),
         },
     ];
-    let app = App::new(snapshot);
+    let app = App::new(snapshot, Instant::now());
     for (width, height) in SIZES {
         let screen = render(&app, width, height);
         assert!(screen.contains("5 cores · 80% active"));
@@ -188,10 +190,11 @@ fn narrow_memory_views_keep_usage_and_recent_swap_activity() {
     snapshot.memory.free = 2 * GIB;
     snapshot.memory.swap_in_bytes_per_sec = MIB as f64;
     snapshot.memory.swap_out_bytes_per_sec = 3.5 * MIB as f64;
-    let mut app = App::new(snapshot.clone());
+    let start = Instant::now();
+    let mut app = App::new(snapshot.clone(), start);
     snapshot.memory.swap_in_bytes_per_sec = 0.0;
     snapshot.memory.swap_out_bytes_per_sec = 0.0;
-    app.ingest(snapshot);
+    app.ingest(snapshot, start + Duration::from_secs(1), true);
     for (width, height) in [(90, 25), (90, 54)] {
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
         terminal.draw(|frame| ui::draw(frame, &app)).unwrap();
@@ -262,7 +265,7 @@ fn compact_process_view_sorts_and_scrolls_without_losing_rows() {
         })
         .collect();
     for (width, height, visible) in [(90, 25, 3), (184, 25, 3), (90, 54, 15), (180, 54, 15)] {
-        let mut app = App::new(snapshot.clone());
+        let mut app = App::new(snapshot.clone(), Instant::now());
         let screen = render(&app, width, height);
         assert!(screen.contains(&format!("1–{visible} / 32")));
         assert!(screen.contains("fixture-31"));
@@ -300,10 +303,15 @@ fn compact_process_view_sorts_and_scrolls_without_losing_rows() {
 fn dashboard_and_overlays_inherit_the_terminal_theme() {
     let mut source = MockSource::default();
     for _ in 0..3 {
-        let mut app = App::new(source.sample().unwrap());
-        for (expanded, help) in [(false, false), (true, false), (false, true)] {
+        let mut app = App::new(source.sample().unwrap(), Instant::now());
+        for (expanded, modal) in [
+            (false, None),
+            (true, None),
+            (false, Some(Modal::Help)),
+            (false, Some(Modal::Frequency)),
+        ] {
             app.expanded = expanded;
-            app.help = help;
+            app.modal = modal;
             for (width, height) in [(180, 54), (90, 25)] {
                 let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
                 terminal.draw(|frame| ui::draw(frame, &app)).unwrap();
@@ -327,5 +335,262 @@ fn dashboard_and_overlays_inherit_the_terminal_theme() {
             }
         }
         source.cycle_scenario();
+    }
+}
+
+#[test]
+fn live_view_does_not_invent_history_clocks_or_successful_samples() {
+    let mut snapshot = MockSource::default().sample().unwrap();
+    snapshot.cpu.truncate(1);
+    snapshot.cpu[0].cores.fill(75.0);
+    snapshot.cpu[0].frequency_ghz = None;
+    snapshot.cpu[0].max_frequency_ghz = None;
+    snapshot.processes.clear();
+    let start = Instant::now();
+    let mut app = App::new(snapshot.clone(), start);
+    let cold = render(&app, 180, 54);
+    assert!(cold.contains("LIVE"));
+    assert!(cold.contains("— / — GHz"));
+    assert!(!cold.contains("0.00 GHz"));
+    assert!(cold.contains("0–0 / 0"));
+    let bars = |screen: &str| screen.chars().filter(|c| matches!(c, '▁'..='█')).count();
+    for second in 1..HISTORY_WINDOW.as_secs() {
+        app.ingest(snapshot.clone(), start + Duration::from_secs(second), true);
+    }
+    let warm = render(&app, 180, 54);
+    assert!(
+        bars(&warm) > 3 * bars(&cold),
+        "one sample must not stretch into a full minute of history"
+    );
+    app.sampling_error = Some("native sampling failed".into());
+    let stale = render(&app, 90, 25);
+    assert!(stale.contains("STALE"));
+    assert!(!stale.contains("LIVE"));
+    assert!(
+        stale.contains("In use"),
+        "keep the last good sample visible"
+    );
+    app.modal = Some(Modal::Help);
+    assert!(render(&app, 90, 25).contains("native sampling failed"));
+}
+
+#[test]
+fn cpu_history_has_no_floating_zero_ticks() {
+    let mut snapshot = MockSource::default().sample().unwrap();
+    snapshot.cpu.truncate(2);
+    for tier in &mut snapshot.cpu {
+        tier.cores.fill(0.0);
+    }
+    let start = Instant::now();
+    let mut app = App::new(snapshot.clone(), start);
+    let mut at = start;
+    for value in [0.0, 3.0, 24.0] {
+        snapshot.cpu[1].cores.fill(value);
+        for _ in 0..20 {
+            at += Duration::from_secs(1);
+            app.ingest(snapshot.clone(), at, true);
+        }
+    }
+    let mut terminal = Terminal::new(TestBackend::new(90, 25)).unwrap();
+    terminal.draw(|frame| ui::draw(frame, &app)).unwrap();
+    let buffer = terminal.backend().buffer();
+    let mut has_small_bar = false;
+    let mut has_full_bar = false;
+    for y in 4..8 {
+        for x in 3..87 {
+            let cell = &buffer[(x, y)];
+            assert_ne!(
+                cell.symbol(),
+                "─",
+                "a centered dash is not a zero-height bar"
+            );
+            if cell.fg == Color::Blue {
+                has_small_bar |= cell.symbol() == "▁";
+                has_full_bar |= cell.symbol() == "█";
+            }
+        }
+    }
+    assert!(
+        has_small_bar && has_full_bar,
+        "keep low activity and spikes visible"
+    );
+    for y in 4..8 {
+        for x in 3..42 {
+            assert_eq!(buffer[(x, y)].symbol(), " ", "idle E-CPU history is empty");
+        }
+    }
+}
+
+#[test]
+fn frequency_changes_preserve_history_and_its_time_window() {
+    let start = Instant::now();
+    let mut app = App::new(MockSource::default().sample().unwrap(), start);
+    for second in 1..20 {
+        app.ingest(
+            app.snapshot.clone(),
+            start + Duration::from_secs(second),
+            true,
+        );
+    }
+    let original: Vec<_> = SIZES.iter().map(|&(w, h)| render(&app, w, h)).collect();
+    for (faster, interval, frequency, period) in [
+        (true, 500, "2.0 Hz", "Every 500 ms"),
+        (true, 250, "4.0 Hz", "Every 250 ms"),
+        (false, 500, "2.0 Hz", "Every 500 ms"),
+        (false, 1000, "1.0 Hz", "Every 1 s"),
+        (false, 2000, "0.5 Hz", "Every 2 s"),
+        (false, 5000, "0.2 Hz", "Every 5 s"),
+    ] {
+        assert_eq!(
+            app.change_frequency(faster),
+            Some(Duration::from_millis(interval))
+        );
+        for ((width, height), before) in SIZES.into_iter().zip(&original) {
+            app.modal = None;
+            assert_eq!(
+                &render(&app, width, height),
+                before,
+                "rate changes must not erase or rescale history"
+            );
+            assert!(before.contains("Usage · 60s"));
+            app.modal = Some(Modal::Frequency);
+            let screen = render(&app, width, height);
+            for label in [
+                "UPDATE FREQUENCY",
+                frequency,
+                period,
+                "+ faster",
+                "− slower",
+                "x close",
+            ] {
+                assert!(screen.contains(label), "{width}×{height}: missing {label}");
+            }
+        }
+        if interval == 250 {
+            assert_eq!(app.change_frequency(true), None);
+        }
+    }
+    assert_eq!(app.change_frequency(false), None);
+}
+
+#[test]
+fn timestamped_charts_preserve_spikes_leave_gaps_and_expire_by_age() {
+    let start = Instant::now();
+    let mut snapshot = MockSource::default().sample().unwrap();
+    snapshot.cpu.truncate(1);
+    snapshot.cpu[0].cores.fill(0.0);
+    snapshot.memory.app = 8 * GIB;
+    snapshot.memory.wired = 4 * GIB;
+    snapshot.memory.compressed = 4 * GIB;
+    snapshot.memory.cached = 14 * GIB;
+    snapshot.memory.free = 2 * GIB;
+    snapshot.memory.swap_in_bytes_per_sec = 0.0;
+    snapshot.memory.swap_out_bytes_per_sec = 0.0;
+    let mut app = App::new(snapshot.clone(), start);
+    for (millis, activity, swap, continuous) in [
+        (10_000, 100.0, MIB as f64, true),
+        (10_250, 0.0, 0.0, true),
+        (40_000, 50.0, 0.0, false),
+        (45_000, 50.0, 0.0, true),
+    ] {
+        snapshot.cpu[0].cores.fill(activity);
+        snapshot.memory.swap_in_bytes_per_sec = swap;
+        app.ingest(
+            snapshot.clone(),
+            start + Duration::from_millis(millis),
+            continuous,
+        );
+    }
+    let screen = render(&app, 90, 25);
+    let rows: Vec<Vec<_>> = screen.lines().map(|line| line.chars().collect()).collect();
+    // The 84-column CPU plot covers −15…45 seconds, not five equal sample slots.
+    assert_eq!(rows[4][28], '█', "retain the ten-second full-load interval");
+    assert_eq!(rows[4][81], ' ', "the new 50% interval is only half height");
+    assert_eq!(rows[7][81], '█');
+    for cell in &rows[7][43..70] {
+        assert_eq!(*cell, ' ', "do not fill a missing CPU interval");
+    }
+    let memory_y = screen
+        .lines()
+        .position(|line| line.contains("Usage ·"))
+        .unwrap()
+        + 1;
+    assert!(
+        rows[memory_y]
+            .iter()
+            .any(|c| ('\u{2801}'..='\u{28ff}').contains(c))
+    );
+    for cell in &rows[memory_y][67..78] {
+        assert_eq!(*cell, ' ', "do not connect memory across a gap");
+    }
+    assert!(render(&app, 180, 54).contains("0–1.0 MiB/s shared · 60s"));
+
+    for millis in [70_000, 70_500] {
+        app.ingest(
+            snapshot.clone(),
+            start + Duration::from_millis(millis),
+            true,
+        );
+        let expired = render(&app, 90, 25);
+        assert!(
+            expired.lines().nth(4).unwrap().chars().all(|c| c != '█'),
+            "the old CPU spike expired"
+        );
+        assert!(
+            !render(&app, 180, 54).contains("shared ·"),
+            "expired paging must not keep the swap chart alive"
+        );
+    }
+
+    for (millis, activity) in [(75_000, 0.0), (75_250, 100.0), (75_500, 0.0), (76_000, 0.0)] {
+        snapshot.cpu[0].cores.fill(activity);
+        app.ingest(
+            snapshot.clone(),
+            start + Duration::from_millis(millis),
+            true,
+        );
+    }
+    let spike = render(&app, 90, 25);
+    assert_eq!(
+        spike.lines().nth(4).unwrap().chars().nth(85),
+        Some('█'),
+        "a quarter-second peak must survive a later zero reading in the same chart column"
+    );
+}
+
+#[test]
+fn dense_and_mixed_rate_histories_render_the_same_elapsed_window() {
+    let start = Instant::now();
+    let mut snapshot = MockSource::default().sample().unwrap();
+    for tier in &mut snapshot.cpu {
+        tier.cores.fill(75.0);
+    }
+    snapshot.memory.swap_in_bytes_per_sec = MIB as f64;
+    snapshot.memory.swap_out_bytes_per_sec = 3.5 * MIB as f64;
+    let mut dense = App::new(snapshot.clone(), start);
+    let mut mixed = App::new(snapshot.clone(), start);
+    for step in 1..=325 {
+        dense.ingest(
+            snapshot.clone(),
+            start + Duration::from_millis(step * 250),
+            true,
+        );
+    }
+    for millis in [
+        500, 1_000, 2_000, 4_000, 9_000, 14_000, 19_000, 24_000, 29_000, 34_000, 39_000, 44_000,
+        49_000, 54_000, 59_000, 64_000, 69_000, 74_000, 79_000, 81_250,
+    ] {
+        mixed.ingest(
+            snapshot.clone(),
+            start + Duration::from_millis(millis),
+            true,
+        );
+    }
+    for (width, height) in SIZES {
+        assert_eq!(
+            render(&dense, width, height),
+            render(&mixed, width, height),
+            "elapsed time, not sample count, sets the coverage at {width}×{height}"
+        );
     }
 }
