@@ -9,14 +9,44 @@ struct CPUHistoryPoint: Identifiable {
   let segment: UInt64
 }
 
+struct DeliverySchedule {
+  private var deadline: ContinuousClock.Instant
+  private var retried = false
+
+  init(at now: ContinuousClock.Instant = .now) { deadline = now }
+
+  mutating func advance(
+    at now: ContinuousClock.Instant, frequency: UpdateFrequency, rescheduled: Bool, empty: Bool
+  ) -> ContinuousClock.Instant {
+    if rescheduled || now > deadline + frequency.interval { deadline = now }
+    if empty && !rescheduled && !retried {
+      deadline = now + .milliseconds(50)
+      retried = true
+    } else {
+      deadline += frequency.interval
+      retried = false
+    }
+    return deadline
+  }
+}
+
 @MainActor
 final class MonitorStore: ObservableObject {
-  @Published private(set) var reading: MetricsUpdate?
-  @Published private(set) var cpuHistory: [CPUHistoryPoint] = []
-  @Published private(set) var error: String?
-  @Published private(set) var isStale = false
+  struct State {
+    var reading: MetricsUpdate?
+    var cpuHistory: [CPUHistoryPoint] = []
+    var error: String?
+    var isStale = false
+  }
+
+  @Published private(set) var state = State()
   @Published private(set) var frequency: UpdateFrequency = .one
   let isDemo: Bool
+
+  var reading: MetricsUpdate? { state.reading }
+  var cpuHistory: [CPUHistoryPoint] { state.cpuHistory }
+  var error: String? { state.error }
+  var isStale: Bool { state.isStale }
 
   private var worker: Task<Void, Never>?
   private var delay: Task<Void, Never>?
@@ -35,30 +65,27 @@ final class MonitorStore: ObservableObject {
           let sampler = try NativeSampler(demo: demo)
           defer { sampler.close() }
           var appliedFrequency = UpdateFrequency.one
-          var nextPoll = ContinuousClock.now
+          var schedule = DeliverySchedule()
           while !Task.isCancelled {
             guard let frequency = await self?.frequency else { return }
             let polledAt = ContinuousClock.now
-            if polledAt > nextPoll + frequency.interval { nextPoll = polledAt }
-            var waitInterval = frequency.interval
+            let rescheduled = frequency != appliedFrequency
+            var empty = false
             do {
-              if frequency != appliedFrequency {
+              if rescheduled {
                 try sampler.setFrequency(frequency)
                 appliedFrequency = frequency
-                nextPoll = polledAt
               }
               let reading = try sampler.poll()
               if Task.isCancelled { break }
               if let reading { await self?.accept(reading) } else { await self?.checkStaleness() }
-              if reading == nil {
-                nextPoll = polledAt
-                waitInterval = .milliseconds(50)
-              }
+              empty = reading == nil
             } catch {
               await self?.fail(error.localizedDescription)
             }
             // Keep timer coalescing and view work from accumulating across refreshes.
-            nextPoll += waitInterval
+            let nextPoll = schedule.advance(
+              at: polledAt, frequency: frequency, rescheduled: rescheduled, empty: empty)
             await self?.wait(at: frequency, until: nextPoll)
           }
         } catch {
@@ -95,36 +122,41 @@ final class MonitorStore: ObservableObject {
   }
 
   func accept(_ reading: MetricsUpdate) {
-    if reading.reset { cpuHistory.removeAll(keepingCapacity: true) }
-    let previous = cpuHistory.last
+    var next = state
+    if reading.reset { next.cpuHistory.removeAll(keepingCapacity: true) }
+    let previous = next.cpuHistory.last
     let continuous =
       previous.map { reading.sequence == $0.id + 1 } == true
       && !reading.delayed && !isStale
     let segment = (previous?.segment ?? 0) + (continuous ? 0 : 1)
-    cpuHistory.append(
+    next.cpuHistory.append(
       CPUHistoryPoint(
         id: reading.sequence, time: reading.time, percent: reading.snapshot.cpuPercent,
         segment: segment))
     // Keep one predecessor so the chart can clip a line crossing its left edge.
-    while cpuHistory.count > 1 && cpuHistory[1].time <= reading.time - 60 {
-      cpuHistory.removeFirst()
+    while next.cpuHistory.count > 1 && next.cpuHistory[1].time <= reading.time - 60 {
+      next.cpuHistory.removeFirst()
     }
-    self.reading = reading
+    next.reading = reading
+    next.error = nil
+    next.isStale = false
     lastReceived = .now
-    error = nil
-    isStale = false
+    state = next
   }
 
   func fail(_ message: String) {
-    error = message
-    isStale = true
+    guard error != message || !isStale else { return }
+    var next = state
+    next.error = message
+    next.isStale = true
+    state = next
   }
 
   private func checkStaleness() {
-    if let lastReceived,
+    if !isStale, let lastReceived,
       lastReceived.duration(to: .now) > max(.seconds(3), frequency.interval * 3)
     {
-      isStale = true
+      state.isStale = true
     }
   }
 }

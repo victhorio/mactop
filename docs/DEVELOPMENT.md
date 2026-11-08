@@ -182,11 +182,15 @@ Ownership and data flow:
   share that store. Startup failures retry after five seconds; measurement
   errors retain the last good reading and retry on subsequent polls. Rate
   changes interrupt the current wait and reschedule collection without resetting
-  counters. A poll just ahead of collection retries after 50 ms instead of
-  waiting another full interval. Delivery waits use monotonic deadlines so view
+  counters. Rescheduling waits for the new collection deadline. A poll just ahead
+  of collection retries once after 50 ms, then returns to the selected interval
+  if no sample is ready. Delivery waits use monotonic deadlines so view
   updates do not add to the selected interval. No delivery for three intervals
   (at least three seconds) marks the reading stale. Unexpected worker termination
   is surfaced, but requires restarting the app rather than silently rebuilding it.
+- Each reading, its history, and its error/staleness state publish together.
+  Status items observe only their rounded percentage and staleness, updating
+  their images and accessibility text synchronously when those values change.
 - CPU history uses the sampler's monotonic timestamps, retaining the last
   minute and one left-edge predecessor. Errors, missed sequences and delayed
   samples break the line; restarts clear it. Rate changes preserve the time

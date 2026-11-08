@@ -7,9 +7,8 @@ use std::{
 };
 
 use crate::{
-    app::Update,
     metrics::{Pressure, TierKind},
-    sampling::{Command, Sampler},
+    sampling::{Command, Sampler, Update},
 };
 
 #[repr(C)]

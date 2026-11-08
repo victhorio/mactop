@@ -4,8 +4,9 @@ use std::{
 };
 
 use mactop::{
-    app::{App, HISTORY_WINDOW, Modal, Sort, Update},
+    app::{App, HISTORY_WINDOW, Modal, Sort},
     metrics::{CpuTier, GIB, MIB, MetricsSource, MockSource, Pressure, Process, TierKind},
+    sampling::Update,
     ui,
 };
 use ratatui::{Terminal, backend::TestBackend, style::Color};

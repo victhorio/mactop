@@ -4,10 +4,12 @@ use std::{
     time::{Duration, Instant},
 };
 
-use crate::metrics::{Snapshot, TierKind};
+use crate::{
+    metrics::{Snapshot, TierKind},
+    sampling::{DEFAULT_INTERVAL, Update},
+};
 
 pub const HISTORY_WINDOW: Duration = Duration::from_secs(60);
-pub const DEFAULT_INTERVAL: Duration = Duration::from_secs(1);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Sort {
@@ -19,15 +21,6 @@ pub enum Sort {
 pub enum Modal {
     Help,
     Frequency,
-}
-
-pub struct Update {
-    pub snapshot: Snapshot,
-    pub demo_label: Option<&'static str>,
-    pub reset: bool,
-    pub sequence: u64,
-    pub at: Instant,
-    pub delayed: bool,
 }
 
 #[derive(Default)]

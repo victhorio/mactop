@@ -5,10 +5,18 @@ use std::{
     time::{Duration, Instant},
 };
 
-use crate::{
-    app::{DEFAULT_INTERVAL, Update},
-    metrics::{MetricsSource, MockSource},
-};
+use crate::metrics::{MetricsSource, MockSource, Snapshot};
+
+pub const DEFAULT_INTERVAL: Duration = Duration::from_secs(1);
+
+pub struct Update {
+    pub snapshot: Snapshot,
+    pub demo_label: Option<&'static str>,
+    pub reset: bool,
+    pub sequence: u64,
+    pub at: Instant,
+    pub delayed: bool,
+}
 
 pub enum Command {
     Scenario,

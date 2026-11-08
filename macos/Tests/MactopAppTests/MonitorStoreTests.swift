@@ -1,9 +1,103 @@
+import AppKit
 import Combine
 import Foundation
 import Testing
 
 @testable import MactopApp
 @testable import MetricsCore
+
+@Test func deliveryWaitsRespectRateChangesAndBoundEmptyRetries() {
+  let start = ContinuousClock.now
+  var schedule = DeliverySchedule(at: start)
+  #expect(
+    schedule.advance(at: start, frequency: .one, rescheduled: false, empty: false)
+      == start + .seconds(1))
+
+  let changedAt = start + .milliseconds(200)
+  let due = changedAt + .seconds(5)
+  #expect(
+    schedule.advance(at: changedAt, frequency: .fifth, rescheduled: true, empty: true) == due,
+    "A slower rate must wait for the new collection deadline, not poll every 50 ms")
+  let retry = due + .milliseconds(50)
+  #expect(schedule.advance(at: due, frequency: .fifth, rescheduled: false, empty: true) == retry)
+  #expect(
+    schedule.advance(at: retry, frequency: .fifth, rescheduled: false, empty: true)
+      == retry + .seconds(5), "A stalled collector must not keep fast retries running")
+
+  let resumed = start + .seconds(100)
+  #expect(
+    schedule.advance(at: resumed, frequency: .four, rescheduled: true, empty: false)
+      == resumed + .milliseconds(250), "A rate change must discard the old deadline")
+  #expect(
+    schedule.advance(
+      at: resumed + .milliseconds(250), frequency: .four, rescheduled: false, empty: false)
+      == resumed + .milliseconds(500))
+}
+
+@Test @MainActor func readingsPublishAtomicallyAndRepeatedFailuresDoNotPublish() {
+  let store = MonitorStore(demo: true)
+  var states: [MonitorStore.State] = []
+  var notifications = 0
+  let changes = store.objectWillChange.sink { notifications += 1 }
+  let readings = store.$state.dropFirst().sink { states.append($0) }
+  for (sequence, time) in [0.0, 1, 62].enumerated() {
+    store.accept(historyUpdate(time: time, sequence: UInt64(sequence), reset: sequence == 0))
+  }
+  #expect(notifications == 3, "Reset and history pruning must not emit extra notifications")
+  #expect(states.count == 3)
+  #expect(states.allSatisfy { $0.reading?.sequence == $0.cpuHistory.last?.id })
+  #expect(states.allSatisfy { $0.reading?.time == $0.cpuHistory.last?.time })
+  #expect(store.cpuHistory.map(\.time) == [1, 62])
+
+  store.fail("Interrupted")
+  store.fail("Interrupted")
+  #expect(states.count == 4)
+  #expect(states.last?.isStale == true)
+  #expect(states.last?.error == "Interrupted")
+  store.setFrequency(.four)
+  #expect(states.count == 4, "Frequency changes do not change the measurement state")
+  store.accept(historyUpdate(time: 63, sequence: 3))
+  #expect(states.count == 5)
+  #expect(states.last?.error == nil)
+  #expect(states.last?.isStale == false)
+  withExtendedLifetime((changes, readings)) {}
+}
+
+@Test @MainActor func statusItemsUpdateOnlyWhenTheirDisplayedValuesChange() throws {
+  _ = NSApplication.shared
+  let store = MonitorStore(demo: true)
+  let cpu = MetricStatusItem(panel: .cpu, store: store)
+  let memory = MetricStatusItem(panel: .memory, store: store)
+  defer {
+    NSStatusBar.system.removeStatusItem(cpu.statusItem)
+    NSStatusBar.system.removeStatusItem(memory.statusItem)
+  }
+  #expect(cpu.statusItem.button?.toolTip?.contains("unavailable") == true)
+  store.accept(historyUpdate(time: 0, sequence: 0, active: 20.1, reset: true))
+  let cpuImage = try #require(cpu.statusItem.button?.image)
+  let memoryImage = try #require(memory.statusItem.button?.image)
+  #expect(cpu.statusItem.button?.toolTip?.contains("20%") == true)
+  #expect(memory.statusItem.button?.toolTip?.contains("40%") == true)
+
+  store.accept(historyUpdate(time: 1, sequence: 1, active: 20.4))
+  store.setFrequency(.four)
+  #expect(cpu.statusItem.button?.image === cpuImage)
+  #expect(memory.statusItem.button?.image === memoryImage)
+  store.accept(historyUpdate(time: 2, sequence: 2, active: 20.6))
+  #expect(cpu.statusItem.button?.image !== cpuImage)
+  #expect(cpu.statusItem.button?.toolTip?.contains("21%") == true)
+  #expect(memory.statusItem.button?.image === memoryImage)
+
+  store.fail("Interrupted")
+  let staleImage = try #require(cpu.statusItem.button?.image)
+  #expect(cpu.statusItem.button?.toolTip?.contains("last reading") == true)
+  #expect(memory.statusItem.button?.image !== memoryImage)
+  store.fail("Interrupted")
+  #expect(cpu.statusItem.button?.image === staleImage)
+  store.accept(historyUpdate(time: 3, sequence: 3, active: 20.6))
+  #expect(cpu.statusItem.button?.image !== staleImage)
+  #expect(cpu.statusItem.button?.toolTip?.contains("last reading") == false)
+}
 
 @Test @MainActor func errorsRetainTheLastGoodReadingAndRecoveryClearsStaleness() throws {
   let store = MonitorStore(demo: true)
@@ -140,7 +234,7 @@ import Testing
 @Test @MainActor func consumerWorkDoesNotAddToTheSelectedUpdateInterval() async throws {
   let store = MonitorStore(demo: true)
   var sequences: [UInt64] = []
-  let observation = store.$reading.compactMap { $0 }.sink { reading in
+  let observation = store.$state.compactMap(\.reading).sink { reading in
     sequences.append(reading.sequence)
     // Model view updating that fits within the 250 ms sampling interval.
     Thread.sleep(forTimeInterval: 0.12)
