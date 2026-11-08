@@ -88,10 +88,9 @@ struct MetricPanelView: View {
       HStack(alignment: .top, spacing: 9) {
         Text("\(snapshot.coreCount) cores")
           .font(.system(size: 10.5)).foregroundStyle(.secondary)
-          .frame(width: 86, alignment: .leading).padding(.top, 3)
+          .fixedSize().padding(.top, 3)
         LazyVGrid(
-          columns: Array(
-            repeating: GridItem(.fixed(10), spacing: 4), count: min(12, snapshot.coreCount)),
+          columns: [GridItem(.adaptive(minimum: 10, maximum: 10), spacing: 4)],
           alignment: .trailing, spacing: 4
         ) {
           ForEach(cores.indices, id: \.self) { position in
@@ -114,6 +113,7 @@ struct MetricPanelView: View {
                 "\(tier.kind.name) core \(index + 1): \(percent(tier.cores[index]))")
           }
         }
+        .frame(maxWidth: CGFloat(cores.count) * 14)
         .frame(maxWidth: .infinity, alignment: .trailing)
       }
     }
