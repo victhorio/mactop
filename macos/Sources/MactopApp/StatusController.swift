@@ -18,12 +18,13 @@ final class StatusController {
 }
 
 @MainActor
-final class MetricStatusItem: NSObject {
+final class MetricStatusItem: NSObject, NSPopoverDelegate {
   let panel: MetricPanel
   let statusItem = NSStatusBar.system.statusItem(withLength: 36)
   let popover = NSPopover()
   private let store: MonitorStore
   private var observation: AnyCancellable?
+  private var outsideClickMonitor: AnyCancellable?
   private var displayed: StatusReading?
 
   private struct StatusReading: Equatable {
@@ -40,6 +41,7 @@ final class MetricStatusItem: NSObject {
     statusItem.button?.action = #selector(clicked)
     statusItem.button?.sendAction(on: [.leftMouseUp, .rightMouseUp])
     popover.behavior = .transient
+    popover.delegate = self
     popover.animates = !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
     popover.contentViewController = PanelViewController(store: store, panel: panel)
     observation = store.objectWillChange.sink { [weak self] _ in
@@ -65,7 +67,32 @@ final class MetricStatusItem: NSObject {
     popover.contentViewController?.view.window?.makeKey()
   }
 
+  func popoverWillShow(_ notification: Notification) {
+    let monitor = NSEvent.addGlobalMonitorForEvents(
+      matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]
+    ) { [weak self] _ in
+      guard let self else { return }
+      // macOS can report a status-item click globally before forwarding it to
+      // the button. Leave that click to the button's normal toggle/menu action.
+      if let button = self.statusItem.button, let window = button.window,
+        window.convertToScreen(button.convert(button.bounds, to: nil)).contains(
+          NSEvent.mouseLocation)
+      {
+        return
+      }
+      self.popover.performClose(nil)
+    }
+    if let monitor {
+      outsideClickMonitor = AnyCancellable { NSEvent.removeMonitor(monitor) }
+    }
+  }
+
+  func popoverWillClose(_ notification: Notification) {
+    outsideClickMonitor = nil
+  }
+
   private func openMenu() {
+    popover.performClose(nil)
     makeMenu().popUp(positioning: nil, at: NSEvent.mouseLocation, in: nil)
   }
 
