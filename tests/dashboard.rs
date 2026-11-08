@@ -1,7 +1,10 @@
-use std::time::{Duration, Instant};
+use std::{
+    io,
+    time::{Duration, Instant},
+};
 
 use mactop::{
-    app::{App, HISTORY_WINDOW, Modal, Sort},
+    app::{App, HISTORY_WINDOW, Modal, Sort, Update},
     metrics::{CpuTier, GIB, MIB, MetricsSource, MockSource, Pressure, Process, TierKind},
     ui,
 };
@@ -593,4 +596,100 @@ fn dense_and_mixed_rate_histories_render_the_same_elapsed_window() {
             "elapsed time, not sample count, sets the coverage at {width}×{height}"
         );
     }
+}
+
+#[test]
+fn accepted_updates_preserve_history_and_break_only_missing_intervals() {
+    let start = Instant::now();
+    let mut snapshot = MockSource::default().sample().unwrap();
+    snapshot.cpu.truncate(1);
+    snapshot.cpu[0].cores.fill(100.0);
+    let update = |sequence, second, delayed| Update {
+        snapshot: snapshot.clone(),
+        demo_label: None,
+        reset: false,
+        sequence,
+        at: start + Duration::from_secs(second),
+        delayed,
+    };
+    for interruption in [
+        "none",
+        "skipped",
+        "delayed",
+        "error",
+        "pause",
+        "quick pause",
+    ] {
+        let mut app = App::new(snapshot.clone(), start);
+        assert!(app.accept(Ok(update(1, 10, false))));
+        let mut sequence = 2;
+        match interruption {
+            "skipped" => sequence = 3,
+            "error" => {
+                assert!(app.accept(Err(io::Error::other("collection failed"))));
+                assert!(render(&app, 90, 25).contains("STALE"));
+                assert_eq!(app.history.samples.len(), 2);
+                sequence = 3;
+            }
+            "pause" | "quick pause" => {
+                app.toggle_pause();
+                let frozen = render(&app, 90, 25);
+                if interruption == "pause" {
+                    assert!(!app.accept(Ok(update(2, 15, false))));
+                    assert_eq!(render(&app, 90, 25), frozen);
+                    sequence = 3;
+                }
+                app.toggle_pause();
+            }
+            _ => {}
+        }
+        assert!(app.accept(Ok(update(sequence, 20, interruption == "delayed"))));
+        assert_eq!(
+            app.history.samples.len(),
+            3,
+            "{interruption}: keep earlier history"
+        );
+        assert_eq!(app.history.samples.front().unwrap().at, start);
+        let screen = render(&app, 90, 25);
+        assert!(screen.contains("LIVE") && !screen.contains("STALE"));
+        let cpu: Vec<_> = screen.lines().nth(7).unwrap().chars().collect();
+        assert!(
+            cpu[65..72].iter().all(|c| *c == '█'),
+            "keep the first measured interval"
+        );
+        // At t=20, these columns cover the interior of t=10…20, not its endpoints.
+        let expected = if interruption == "none" { '█' } else { ' ' };
+        assert!(
+            cpu[75..85].iter().all(|c| *c == expected),
+            "{interruption}: wrong connection across the latest interval\n{screen}"
+        );
+    }
+}
+
+#[test]
+fn explicit_demo_reset_works_while_paused_without_resetting_the_view() {
+    let start = Instant::now();
+    let snapshot = MockSource::default().sample().unwrap();
+    let mut app = App::new(snapshot.clone(), start);
+    app.ingest(snapshot.clone(), start + Duration::from_secs(1), true);
+    app.expanded = true;
+    app.set_sort(Sort::Memory);
+    app.process_offset = 2;
+    app.modal = Some(Modal::Frequency);
+    app.toggle_pause();
+    assert!(app.accept(Ok(Update {
+        snapshot,
+        demo_label: Some("CPU load"),
+        reset: true,
+        sequence: 4,
+        at: start + Duration::from_secs(2),
+        delayed: false,
+    })));
+    assert_eq!(app.history.samples.len(), 1);
+    assert_eq!(app.process_offset, 0);
+    assert!(app.paused && app.expanded);
+    assert_eq!(app.sort, Sort::Memory);
+    assert_eq!(app.modal, Some(Modal::Frequency));
+    assert_eq!(app.demo_label, Some("CPU load"));
+    assert!(render(&app, 90, 25).contains("UPDATE FREQUENCY"));
 }

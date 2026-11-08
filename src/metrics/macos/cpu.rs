@@ -47,6 +47,70 @@ struct Tier {
     frequencies: Vec<f64>,
 }
 
+struct CoreResidency {
+    name: String,
+    states: Vec<(String, i64)>,
+}
+
+impl Tier {
+    fn reading(&self, residencies: Vec<CoreResidency>) -> io::Result<CpuTier> {
+        let mut cores = BTreeMap::new();
+        for core in residencies {
+            let (mut active, mut total, mut weighted) = (0.0, 0.0, 0.0);
+            let mut active_states = 0;
+            for (state, residency) in core.states {
+                if residency < 0 {
+                    return Err(io::Error::other("CPU residency counter reset"));
+                }
+                let residency = residency as f64;
+                total += residency;
+                if state == "IDLE" || state == "DOWN" {
+                    continue;
+                }
+                if !state.starts_with('V') || !state.contains('P') {
+                    return Err(io::Error::other(format!("unsupported CPU state {state}")));
+                }
+                active += residency;
+                if let Some(frequency) = self.frequencies.get(active_states) {
+                    weighted += residency * frequency;
+                }
+                active_states += 1;
+            }
+            if total <= 0.0 {
+                return Err(io::Error::other("CPU residency interval unavailable"));
+            }
+            if active_states != self.frequencies.len() {
+                weighted = f64::NAN;
+            }
+            if cores.insert(core.name, (active, total, weighted)).is_some() {
+                return Err(io::Error::other("duplicate native CPU channel"));
+            }
+        }
+        if cores.len() != self.count {
+            return Err(io::Error::other(format!(
+                "{}: expected {} core channels, received {}",
+                self.kind.label(),
+                self.count,
+                cores.len()
+            )));
+        }
+        let active: f64 = cores.values().map(|c| c.0).sum();
+        let weighted: f64 = cores.values().map(|c| c.2).sum();
+        let mut ordered: Vec<_> = cores.into_iter().collect();
+        ordered.sort_by_key(|(name, _)| core_order(name, self.family));
+        Ok(CpuTier {
+            kind: self.kind,
+            cores: ordered
+                .iter()
+                .map(|(_, value)| value)
+                .map(|c| (100.0 * c.0 / c.1).clamp(0.0, 100.0))
+                .collect(),
+            frequency_ghz: (active > 0.0 && weighted.is_finite()).then(|| weighted / active),
+            max_frequency_ghz: self.frequencies.last().copied(),
+        })
+    }
+}
+
 pub(super) struct Cpu {
     subscription: Owned,
     subscribed: Owned,
@@ -166,8 +230,8 @@ impl Cpu {
         };
         self.previous = current;
         let delta = delta?;
-        let mut readings: Vec<BTreeMap<String, (f64, f64, f64)>> =
-            self.tiers.iter().map(|_| BTreeMap::new()).collect();
+        let mut residencies: Vec<Vec<CoreResidency>> =
+            self.tiers.iter().map(|_| Vec::new()).collect();
         for channel in channels(delta.0)? {
             let name = string(unsafe { IOReportChannelGetChannelName(channel) })?;
             let Some(index) = self
@@ -177,74 +241,22 @@ impl Cpu {
             else {
                 continue;
             };
-            let frequencies = &self.tiers[index].frequencies;
             let count = unsafe { IOReportStateGetCount(channel) };
             if !(1..=128).contains(&count) {
                 return Err(io::Error::other("unsupported CPU state count"));
             }
-            let (mut active, mut total, mut weighted) = (0.0, 0.0, 0.0);
-            let mut active_states = 0;
+            let mut states = Vec::with_capacity(count as usize);
             for i in 0..count {
                 let state = string(unsafe { IOReportStateGetNameForIndex(channel, i) })?;
                 let residency = unsafe { IOReportStateGetResidency(channel, i) };
-                if residency < 0 {
-                    return Err(io::Error::other("CPU residency counter reset"));
-                }
-                let residency = residency as f64;
-                total += residency;
-                if state == "IDLE" || state == "DOWN" {
-                    continue;
-                }
-                if !state.starts_with('V') || !state.contains('P') {
-                    return Err(io::Error::other(format!("unsupported CPU state {state}")));
-                }
-                active += residency;
-                if let Some(frequency) = frequencies.get(active_states) {
-                    weighted += residency * frequency;
-                }
-                active_states += 1;
+                states.push((state, residency));
             }
-            if total <= 0.0 {
-                return Err(io::Error::other("CPU residency interval unavailable"));
-            }
-            if active_states != frequencies.len() {
-                weighted = f64::NAN;
-            }
-            if readings[index]
-                .insert(name, (active, total, weighted))
-                .is_some()
-            {
-                return Err(io::Error::other("duplicate native CPU channel"));
-            }
+            residencies[index].push(CoreResidency { name, states });
         }
         self.tiers
             .iter()
-            .zip(readings)
-            .map(|(tier, cores)| {
-                if cores.len() != tier.count {
-                    return Err(io::Error::other(format!(
-                        "{}: expected {} core channels, received {}",
-                        tier.kind.label(),
-                        tier.count,
-                        cores.len()
-                    )));
-                }
-                let active: f64 = cores.values().map(|c| c.0).sum();
-                let weighted: f64 = cores.values().map(|c| c.2).sum();
-                let mut ordered: Vec<_> = cores.into_iter().collect();
-                ordered.sort_by_key(|(name, _)| core_order(name, tier.family));
-                Ok(CpuTier {
-                    kind: tier.kind,
-                    cores: ordered
-                        .iter()
-                        .map(|(_, value)| value)
-                        .map(|c| (100.0 * c.0 / c.1).clamp(0.0, 100.0))
-                        .collect(),
-                    frequency_ghz: (active > 0.0 && weighted.is_finite())
-                        .then(|| weighted / active),
-                    max_frequency_ghz: tier.frequencies.last().copied(),
-                })
-            })
+            .zip(residencies)
+            .map(|(tier, cores)| tier.reading(cores))
             .collect()
     }
 }
@@ -478,4 +490,77 @@ unsafe extern "C" {
     fn IOReportStateGetCount(channel: CFDictionaryRef) -> i32;
     fn IOReportStateGetNameForIndex(channel: CFDictionaryRef, index: i32) -> CFStringRef;
     fn IOReportStateGetResidency(channel: CFDictionaryRef, index: i32) -> i64;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn reading(frequencies: Vec<f64>, cores: &[(&str, [i64; 4])]) -> CpuTier {
+        Tier {
+            kind: TierKind::Efficiency,
+            count: cores.len(),
+            family: "ECPU",
+            frequencies,
+        }
+        .reading(
+            cores
+                .iter()
+                .map(|(name, residencies)| CoreResidency {
+                    name: (*name).to_string(),
+                    states: ["DOWN", "IDLE", "V0P0", "V1P0"]
+                        .into_iter()
+                        .zip(residencies)
+                        .map(|(state, &residency)| (state.to_string(), residency))
+                        .collect(),
+                })
+                .collect(),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn residency_becomes_activity_and_active_weighted_frequency() {
+        let tier = reading(vec![1.0, 2.0], &[("ECPU0", [25, 50, 10, 15])]);
+
+        assert_eq!(tier.kind, TierKind::Efficiency);
+        assert_eq!(tier.cores, [25.0]);
+        assert_eq!(tier.active_percent(), 25.0);
+        assert_eq!(tier.frequency_ghz, Some(1.6));
+        assert_eq!(tier.max_frequency_ghz, Some(2.0));
+    }
+
+    #[test]
+    fn missing_or_mismatched_frequencies_preserve_activity() {
+        for frequencies in [vec![], vec![1.0], vec![1.0, 2.0, 3.0]] {
+            let tier = reading(frequencies, &[("ECPU0", [25, 50, 10, 15])]);
+
+            assert_eq!(tier.cores, [25.0]);
+            assert_eq!(tier.active_percent(), 25.0);
+            assert_eq!(tier.frequency_ghz, None);
+        }
+    }
+
+    #[test]
+    fn idle_interval_has_no_activity_or_current_frequency() {
+        let tier = reading(vec![1.0, 2.0], &[("ECPU0", [0, 100, 0, 0])]);
+
+        assert_eq!(tier.cores, [0.0]);
+        assert_eq!(tier.active_percent(), 0.0);
+        assert_eq!(tier.frequency_ghz, None);
+        assert_eq!(tier.max_frequency_ghz, Some(2.0));
+    }
+
+    #[test]
+    fn tier_frequency_weights_active_residency_across_cores() {
+        let tier = reading(
+            vec![1.0, 2.0],
+            &[("ECPU1", [0, 25, 0, 75]), ("ECPU0", [25, 50, 10, 15])],
+        );
+
+        assert_eq!(tier.cores, [25.0, 75.0]);
+        assert_eq!(tier.active_percent(), 50.0);
+        assert_eq!(tier.frequency_ghz, Some(1.9));
+        assert_eq!(tier.max_frequency_ghz, Some(2.0));
+    }
 }

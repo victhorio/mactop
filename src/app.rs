@@ -1,5 +1,6 @@
 use std::{
     collections::VecDeque,
+    io,
     time::{Duration, Instant},
 };
 
@@ -18,6 +19,15 @@ pub enum Sort {
 pub enum Modal {
     Help,
     Frequency,
+}
+
+pub struct Update {
+    pub snapshot: Snapshot,
+    pub demo_label: Option<&'static str>,
+    pub reset: bool,
+    pub sequence: u64,
+    pub at: Instant,
+    pub delayed: bool,
 }
 
 #[derive(Default)]
@@ -56,6 +66,8 @@ pub struct App {
     pub process_offset: usize,
     pub demo_label: Option<&'static str>,
     pub sampling_error: Option<String>,
+    last_sequence: u64,
+    disconnected: bool,
 }
 
 impl App {
@@ -71,9 +83,46 @@ impl App {
             process_offset: 0,
             demo_label: None,
             sampling_error: None,
+            last_sequence: 0,
+            disconnected: false,
         };
         app.ingest(snapshot, at, false);
         app
+    }
+
+    pub fn accept(&mut self, result: io::Result<Update>) -> bool {
+        match result {
+            Ok(update) if !self.paused || update.reset => {
+                let gap = update.sequence != self.last_sequence + 1 || update.delayed;
+                self.last_sequence = update.sequence;
+                if update.reset {
+                    self.history = History::default();
+                    self.process_offset = 0;
+                }
+                self.ingest(
+                    update.snapshot,
+                    update.at,
+                    !self.disconnected && !gap && !update.reset,
+                );
+                self.demo_label = update.demo_label;
+                self.sampling_error = None;
+                self.disconnected = false;
+                true
+            }
+            Err(error) => {
+                self.sampling_error = Some(error.to_string());
+                self.disconnected = true;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    pub fn toggle_pause(&mut self) {
+        self.paused = !self.paused;
+        if !self.paused {
+            self.disconnected = true;
+        }
     }
 
     pub fn change_frequency(&mut self, faster: bool) -> Option<Duration> {

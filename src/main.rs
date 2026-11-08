@@ -8,7 +8,7 @@ use crossterm::{
     execute,
 };
 use mactop::{
-    app::{App, History, Modal, Sort},
+    app::{App, Modal, Sort},
     ui,
 };
 use ratatui::layout::{Position, Rect};
@@ -45,7 +45,7 @@ fn main() -> io::Result<()> {
     app.demo_label = initial.demo_label;
     let mut terminal = ratatui::try_init()?;
     let result = execute!(io::stdout(), EnableMouseCapture)
-        .and_then(|_| run(&mut terminal, &sampler, &mut app, initial.sequence));
+        .and_then(|_| run(&mut terminal, &sampler, &mut app));
     let mouse_result = execute!(io::stdout(), DisableMouseCapture);
     ratatui::restore();
     result.and(mouse_result)
@@ -55,10 +55,8 @@ fn run(
     terminal: &mut ratatui::DefaultTerminal,
     sampler: &Sampler,
     app: &mut App,
-    mut last_sequence: u64,
 ) -> io::Result<()> {
     let mut dirty = true;
-    let mut disconnected = false;
     loop {
         if dirty {
             terminal.draw(|frame| ui::draw(frame, app))?;
@@ -91,12 +89,7 @@ fn run(
                         match key.code {
                             KeyCode::Char('?') => app.modal = Some(Modal::Help),
                             KeyCode::Char('f') => app.modal = Some(Modal::Frequency),
-                            KeyCode::Char(' ') => {
-                                app.paused = !app.paused;
-                                if !app.paused {
-                                    disconnected = true;
-                                }
-                            }
+                            KeyCode::Char(' ') => app.toggle_pause(),
                             KeyCode::Char('p') => {
                                 app.expanded = !app.expanded;
                                 app.process_offset = 0;
@@ -145,31 +138,7 @@ fn run(
             }
         }
         if let Some(result) = sampler.take()? {
-            match result {
-                Ok(update) if !app.paused || update.reset => {
-                    let gap = update.sequence != last_sequence + 1 || update.delayed;
-                    last_sequence = update.sequence;
-                    if update.reset {
-                        app.history = History::default();
-                        app.process_offset = 0;
-                    }
-                    app.ingest(
-                        update.snapshot,
-                        update.at,
-                        !disconnected && !gap && !update.reset,
-                    );
-                    app.demo_label = update.demo_label;
-                    app.sampling_error = None;
-                    disconnected = false;
-                    dirty = true;
-                }
-                Err(error) => {
-                    app.sampling_error = Some(error.to_string());
-                    disconnected = true;
-                    dirty = true;
-                }
-                _ => {}
-            }
+            dirty |= app.accept(result);
         }
     }
 }
