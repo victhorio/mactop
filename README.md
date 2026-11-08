@@ -4,7 +4,13 @@ A small Apple Silicon monitor with terminal and native menu-bar interfaces. CPU,
 
 Personal project, shared as-is. No support or maintenance commitments.
 
-![mactop with sample data](docs/screenshot.png)
+**Terminal**
+
+![mactop terminal interface with sample data](docs/screenshot.png)
+
+**Menu bar**
+
+<img src="docs/menubar.png" alt="mactop CPU/MEM menu-bar badges and CPU popover with sample data" width="338">
 
 ## Run
 
