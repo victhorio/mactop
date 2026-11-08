@@ -6,6 +6,7 @@ description = "A CPU and memory-first terminal monitor for Apple Silicon"
 publish = false
 
 [dependencies]
+compact_str = "0.9"
 crossterm = "0.29"
 ratatui = { version = "0.30", default-features = false, features = ["crossterm", "crossterm_0_29", "layout-cache"] }
 

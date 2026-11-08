@@ -1,5 +1,7 @@
 use std::io;
 
+use compact_str::CompactString;
+
 #[cfg(target_os = "macos")]
 mod macos;
 #[cfg(target_os = "macos")]
@@ -113,14 +115,14 @@ impl Memory {
 #[derive(Clone, Debug)]
 pub struct Process {
     pub pid: u32,
-    pub name: String,
+    pub name: CompactString,
     pub cpu_percent: f64,
     pub resident_bytes: u64,
 }
 
 #[derive(Clone, Debug)]
 pub struct Snapshot {
-    pub machine: String,
+    pub machine: CompactString,
     /// Only physically available tiers appear here. Never synthesize missing ones.
     pub cpu: Vec<CpuTier>,
     pub memory: Memory,

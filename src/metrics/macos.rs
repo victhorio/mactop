@@ -7,6 +7,7 @@ use std::{
 };
 
 use super::{Memory, MetricsSource, Pressure, Process, Snapshot};
+use compact_str::CompactString;
 use mach2::{
     mach_init::mach_host_self, mach_port::mach_port_deallocate, mach_time::mach_timebase_info,
     traps::mach_task_self,
@@ -17,7 +18,7 @@ mod cpu;
 pub struct MacSource {
     cpu: cpu::Cpu,
     host: libc::mach_port_t,
-    machine: String,
+    machine: CompactString,
     total_memory: u64,
     page_size: u64,
     timebase_ns: f64,
@@ -35,7 +36,7 @@ struct ProcessCounter {
 impl MacSource {
     pub fn new() -> io::Result<Self> {
         let cpu = cpu::Cpu::new()?;
-        let machine = sysctl_string(c"machdep.cpu.brand_string")?;
+        let machine = sysctl_string(c"machdep.cpu.brand_string")?.into();
         let total_memory = sysctl::<u64>(c"hw.memsize")?;
         // sysconf reports the VM page size, not an assumed 4 KiB page.
         let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
@@ -204,7 +205,7 @@ impl MacSource {
             let name =
                 unsafe { std::slice::from_raw_parts(name.as_ptr().cast::<u8>(), name.len()) };
             let name = &name[..name.iter().position(|&c| c == 0).unwrap_or(name.len())];
-            let mut sanitized = String::with_capacity(name.len());
+            let mut sanitized = CompactString::with_capacity(name.len());
             sanitized.extend(
                 String::from_utf8_lossy(name)
                     .chars()

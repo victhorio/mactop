@@ -262,7 +262,7 @@ fn compact_process_view_sorts_and_scrolls_without_losing_rows() {
     snapshot.processes = (0..32)
         .map(|i| Process {
             pid: i,
-            name: format!("fixture-{i:02}"),
+            name: format!("fixture-{i:02}").into(),
             cpu_percent: i as f64 * 13.0,
             resident_bytes: (32 - i) as u64 * GIB,
         })

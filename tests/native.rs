@@ -2,8 +2,9 @@
 
 use std::{
     hint::black_box,
+    io::Write,
     mem::MaybeUninit,
-    process::Command,
+    process::{Command, Stdio},
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -135,4 +136,42 @@ fn native_snapshot_tracks_physical_ram_and_multicore_process_cpu() {
             assert!(current > 0.0 && current <= max);
         }
     }
+}
+
+#[test]
+fn process_exec_refreshes_its_name_without_changing_older_snapshots() {
+    let mut child = Command::new("/bin/sh")
+        .args(["-c", "read -r signal && exec /bin/cat"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .spawn()
+        .unwrap();
+    let mut source = MacSource::new().unwrap();
+    let before = source.sample().unwrap();
+    let initial = before
+        .processes
+        .iter()
+        .find(|p| p.pid == child.id())
+        .unwrap();
+    let previous_name = initial.name.to_string();
+    assert!(!previous_name.is_empty());
+    assert_ne!(previous_name, "cat");
+    writeln!(child.stdin.as_mut().unwrap(), "exec").unwrap();
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let after = source.sample().unwrap();
+        if after
+            .processes
+            .iter()
+            .any(|p| p.pid == child.id() && p.name.as_str() == "cat")
+        {
+            break;
+        }
+        assert!(Instant::now() < deadline, "exec name did not refresh");
+        thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(initial.name.as_str(), previous_name);
+    drop(child.stdin.take());
+    assert!(child.wait().unwrap().success());
 }

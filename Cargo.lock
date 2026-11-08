@@ -349,6 +349,7 @@ checksum = "b0d28e293f2b8c9d2b2d1c0193bd3c1cbdc0d2cf396888dc01162f7cf9d6c3f3"
 name = "mactop"
 version = "0.1.0"
 dependencies = [
+ "compact_str",
  "core-foundation-sys",
  "crossterm",
  "libc",
