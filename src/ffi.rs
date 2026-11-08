@@ -55,6 +55,7 @@ pub struct MactopMemory {
     pub swap_used_bytes: u64,
     pub swap_allocated_bytes: u64,
     pub pressure: u32,
+    pub pressure_percent: u32,
     pub swap_in_bytes_per_sec: f64,
     pub swap_out_bytes_per_sec: f64,
 }
@@ -136,6 +137,7 @@ impl MactopHandle {
                     Pressure::Warning => 1,
                     Pressure::Critical => 2,
                 },
+                pressure_percent: memory.pressure_percent,
                 swap_in_bytes_per_sec: memory.swap_in_bytes_per_sec,
                 swap_out_bytes_per_sec: memory.swap_out_bytes_per_sec,
             },
@@ -382,6 +384,7 @@ mod tests {
         assert_eq!(memory.swap_used_bytes, expected.memory.swap_used);
         assert_eq!(memory.swap_allocated_bytes, expected.memory.swap_allocated);
         assert_eq!(memory.pressure, 0);
+        assert_eq!(memory.pressure_percent, 20);
         assert_eq!(
             memory.swap_in_bytes_per_sec,
             expected.memory.swap_in_bytes_per_sec

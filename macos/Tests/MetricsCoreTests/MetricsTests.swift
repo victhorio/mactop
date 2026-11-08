@@ -5,7 +5,7 @@ import Testing
 @Test func metricDefinitionsUseCoreWeightingAndExcludeReclaimableCache() {
   let memory = Memory(
     app: 5, wired: 2, compressed: 1, cached: 7, free: 5,
-    swapUsed: 3, swapAllocated: 6, pressure: .critical,
+    swapUsed: 3, swapAllocated: 6, pressure: .critical, pressurePercent: 28,
     swapInBytesPerSecond: 4096, swapOutBytesPerSecond: 0)
   let snapshot = MetricsSnapshot(
     machine: "Asymmetric fixture",
@@ -23,6 +23,7 @@ import Testing
   #expect(memory.total == 20)
   #expect(memory.usedPercent == 40)
   #expect(memory.pressure == .critical)
+  #expect(memory.pressurePercent == 28)
 }
 
 @Test func swiftBridgeOwnsCompleteReadingsAfterSamplerDestruction() throws {
@@ -41,6 +42,7 @@ import Testing
   #expect(update.snapshot.tiers.map(\.maxFrequencyGHz) == [2.8, 4.1, 4.6])
   #expect(update.snapshot.memory.total == 32 * 1_073_741_824)
   #expect(update.snapshot.memory.pressure == .normal)
+  #expect(update.snapshot.memory.pressurePercent == 20)
   #expect(update.snapshot.memory.swapUsed == 1_503_238_553)
   #expect(update.snapshot.memory.swapAllocated == 3 * 1_073_741_824)
   #expect(update.snapshot.memory.swapInBytesPerSecond == 0)

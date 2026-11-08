@@ -167,7 +167,7 @@ private func historyUpdate(
       ],
       memory: Memory(
         app: 5, wired: 2, compressed: 1, cached: 7, free: 5,
-        swapUsed: 0, swapAllocated: 0, pressure: .normal,
+        swapUsed: 0, swapAllocated: 0, pressure: .normal, pressurePercent: 20,
         swapInBytesPerSecond: 0, swapOutBytesPerSecond: 0), processes: []),
     time: time, sequence: sequence, reset: reset, delayed: delayed)
 }

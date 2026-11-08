@@ -84,6 +84,8 @@ pub struct Memory {
     pub cached: u64,
     pub free: u64,
     pub pressure: Pressure,
+    /// 100 minus the kernel's available-memory percentage, independent of RAM usage.
+    pub pressure_percent: u32,
     pub swap_used: u64,
     pub swap_allocated: u64,
     pub swap_in_bytes_per_sec: f64,
@@ -226,6 +228,7 @@ impl MetricsSource for MockSource {
             } else {
                 Pressure::Normal
             },
+            pressure_percent: if pressure { 58 } else { 20 },
             swap_used: gib(if pressure { 6.4 } else { 1.4 }),
             swap_allocated: if pressure { 8 * GIB } else { 3 * GIB },
             swap_in_bytes_per_sec: if pressure {

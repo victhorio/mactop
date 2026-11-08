@@ -33,6 +33,18 @@ struct MetricPanelView: View {
         VStack(spacing: 11) {
           Divider()
           processes(snapshot)
+          if panel == .memory {
+            Divider()
+            HStack {
+              Text("Swap").foregroundStyle(.secondary)
+              Spacer()
+              amount(bytes(snapshot.memory.swapUsed))
+            }
+            .help(
+              "\(bytes(snapshot.memory.swapUsed)) of \(bytes(snapshot.memory.swapAllocated)) swap used\n"
+                + "Swap in: \(rate(snapshot.memory.swapInBytesPerSecond)) · Out: \(rate(snapshot.memory.swapOutBytesPerSecond))"
+            )
+          }
         }
       } else {
         HStack(spacing: 10) {
@@ -51,9 +63,10 @@ struct MetricPanelView: View {
     .background(color(0xffffff, 0x292b29))
   }
 
-  private func headline(_ value: Double, label: String) -> some View {
+  private func headline(_ value: Double, label: String, weight: Font.Weight = .medium) -> some View
+  {
     HStack(alignment: .firstTextBaseline, spacing: 2) {
-      Text(String(format: "%.0f", value)).font(.system(size: 43, weight: .medium))
+      Text(String(format: "%.0f", value)).font(.system(size: 43, weight: weight))
         .tracking(-1.8)
       Text("%").font(.system(size: 21)).foregroundStyle(.secondary)
     }
@@ -162,21 +175,25 @@ struct MetricPanelView: View {
     ]
     return VStack(alignment: .leading, spacing: 0) {
       HStack(alignment: .firstTextBaseline) {
-        HStack(alignment: .firstTextBaseline, spacing: 7) {
-          headline(100 - memory.usedPercent, label: "Memory available")
-          Text("available").foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: 6) {
+          headline(memory.usedPercent, label: "Memory used")
+          Text("Memory").foregroundStyle(.secondary)
         }
         .help(
-          "\(bytes(memory.available)) of \(bytes(memory.total)) available · \(bytes(memory.used)) in use\n"
-            + "\(bytes(memory.cached)) cached · \(bytes(memory.free)) free\n"
-            + "\(memory.pressure.name) memory pressure")
-        Spacer(minLength: 4)
-        Text("\(bytes(memory.swapUsed)) swap").foregroundStyle(.secondary)
-          .fixedSize()
-          .help(
-            "\(bytes(memory.swapUsed)) of \(bytes(memory.swapAllocated)) swap used\n"
-              + "Swap in: \(rate(memory.swapInBytesPerSecond)) · Out: \(rate(memory.swapOutBytesPerSecond))"
+          "\(bytes(memory.used)) of \(bytes(memory.total)) in use · \(bytes(memory.available)) available\n"
+            + "\(bytes(memory.cached)) cached · \(bytes(memory.free)) free")
+        Spacer(minLength: 24)
+        VStack(alignment: .trailing, spacing: 6) {
+          headline(
+            memory.pressurePercent, label: "\(memory.pressure.name) memory pressure",
+            weight: .regular
           )
+          Text("Pressure").foregroundStyle(.secondary)
+        }
+        .help(
+          "\(memory.pressure.name) memory pressure\n"
+            + "100 minus the kernel's available-memory percentage; separate from RAM usage. Lower means less pressure."
+        )
       }
       if memory.pressure != .normal {
         Text("\(memory.pressure.name) memory pressure")

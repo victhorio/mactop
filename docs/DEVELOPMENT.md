@@ -104,6 +104,10 @@ error and collection retries. There is no silent mock fallback.
   reserved memory free or reclaimable.
 - The macOS pressure state stays in the memory border as a normal/elevated/critical
   indicator, separate from the in-use percentage. There is no pressure strip.
+  The shared sampler also reads numeric pressure as 100 minus
+  `kern.memorystatus_level`, the kernel's available-memory percentage. This is
+  independent of both RAM usage and the OS pressure state, not an estimate from
+  the app/wired/compressed categories. A higher percentage means less headroom.
 - Swap usage and allocation are distinct from swap-in/out rates in bytes/sec.
   The dashboard shows usage and current rates, not allocation. Idle means no
   current paging, even with nonzero swap usage. Both histories share a scale;
@@ -147,16 +151,17 @@ right-click either to choose 0.2, 0.5, 1, 2, or 4 Hz, or Quit. The selection
 controls the shared sampler, applies to both items, and lasts for the current
 run (default: 1 Hz). MEM reports in-use RAM, not a pressure percentage.
 
-The 312 pt popovers omit redundant titles and lead with CPU activity or available
+The 312 pt popovers omit redundant titles and lead with CPU activity or in-use
 memory percentage. CPU places its fixed 60-second trend beside the reading,
 with 10 pt core cells below: green efficiency, blue performance, pink Super.
 Cells wrap instead of stretching; interval/max clocks and individual core values
-are available on hover. Memory has a compact capacity strip, a three-column
-app/wired/compressed key, and inline swap usage. Capacity, cache/free, pressure,
-swap allocation and paging rates are available on hover; elevated or critical
-pressure also shows a warning, without a normal-state badge. Both show four
-processes, with application icons where available. Quit stays in the right-click
-menu.
+are available on hover. Memory places numeric pressure beside usage, both in
+neutral text, above a compact capacity strip and three-column app/wired/compressed
+key. Swap usage sits in a footer below the processes. Capacity, cache/free,
+pressure definitions, swap allocation and paging rates are available on hover;
+elevated or critical pressure also shows a warning, without a normal-state badge.
+Both show four processes, with application icons where available. Quit stays in
+the right-click menu.
 
 Ownership and data flow:
 

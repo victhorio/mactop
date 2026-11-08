@@ -40,6 +40,7 @@ typedef struct {
     uint64_t swap_used_bytes;
     uint64_t swap_allocated_bytes;
     uint32_t pressure; /* 0 = Normal, 1 = Warning, 2 = Critical. */
+    uint32_t pressure_percent; /* 0–100; 100 minus kern.memorystatus_level, not RAM usage. */
     double swap_in_bytes_per_sec;
     double swap_out_bytes_per_sec;
 } MactopMemory;

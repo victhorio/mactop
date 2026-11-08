@@ -97,6 +97,9 @@ impl MacSource {
                 )));
             }
         };
+        let pressure_percent = 100_u32
+            .checked_sub(sysctl::<u32>(c"kern.memorystatus_level")?)
+            .ok_or_else(|| io::Error::other("invalid available-memory percentage"))?;
         let (swap_in, swap_out) = self.previous_swap.map_or((0.0, 0.0), |(then, ins, outs)| {
             let seconds = at.duration_since(then).as_secs_f64();
             (
@@ -130,6 +133,7 @@ impl MacSource {
             cached,
             free,
             pressure,
+            pressure_percent,
             swap_used: swap.xsu_used,
             swap_allocated: swap.xsu_total,
             swap_in_bytes_per_sec: swap_in,

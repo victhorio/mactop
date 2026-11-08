@@ -86,6 +86,7 @@ public final class NativeSampler {
       swapUsed: raw.memory.swap_used_bytes,
       swapAllocated: raw.memory.swap_allocated_bytes,
       pressure: pressure,
+      pressurePercent: Double(raw.memory.pressure_percent),
       swapInBytesPerSecond: raw.memory.swap_in_bytes_per_sec,
       swapOutBytesPerSecond: raw.memory.swap_out_bytes_per_sec
     )

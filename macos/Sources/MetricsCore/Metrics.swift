@@ -43,6 +43,7 @@ public struct Memory: Sendable {
   public let swapUsed: UInt64
   public let swapAllocated: UInt64
   public let pressure: MemoryPressure
+  public let pressurePercent: Double
   public let swapInBytesPerSecond: Double
   public let swapOutBytesPerSecond: Double
 
