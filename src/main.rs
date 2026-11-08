@@ -9,12 +9,10 @@ use crossterm::{
 };
 use mactop::{
     app::{App, Modal, Sort},
+    sampling::{Command, Sampler},
     ui,
 };
 use ratatui::layout::{Position, Rect};
-
-mod sampling;
-use sampling::{Command, Sampler};
 
 fn main() -> io::Result<()> {
     let (mut demo, mut sample) = (false, false);

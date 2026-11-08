@@ -1,0 +1,5 @@
+module CMactop [system] {
+    header "include/mactop.h"
+    link "mactop"
+    export *
+}

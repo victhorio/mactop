@@ -1,7 +1,8 @@
 # Development notes
 
-A CPU- and memory-first Rust terminal monitor for Apple Silicon, using native
-macOS CPU, memory, swap, and process measurements. No sudo is required.
+A CPU- and memory-first Apple Silicon monitor with a Rust TUI and a native Swift
+menu-bar app, sharing native CPU, memory, swap, and process measurements. No sudo
+is required.
 
 ## Run
 
@@ -124,10 +125,95 @@ it shares the highest tier's frequency table. Intel Macs and macOS VMs without
 the native Apple Silicon channels are not live targets; `--demo` needs no native
 collection. See [third-party notices](../THIRD_PARTY_NOTICES.md) for macmon attribution.
 
+## Native app
+
+The native app is a SwiftPM package under `macos/`, requiring macOS 14+, Apple
+Silicon, and Swift 6.2+. It uses AppKit for the application/status-item/popover
+lifecycle and SwiftUI for deliberately basic detail views. No Xcode project,
+third-party Swift dependencies, web view, server, or measurement subprocess is
+involved. The TUI's entry point and commands remain unchanged.
+
+```sh
+./scripts/run-app             # build and open, live readings
+./scripts/run-app --demo      # explicit synthetic E+P+S fixture
+./scripts/build-app release   # build only
+```
+
+The build script compiles the Rust static library, builds Swift, and produces
+an ad-hoc-signed `macos/.build/Mactop.app`. It does not install the app, add a
+login item, or enable a privileged helper. Left-click CPU or MEM for details;
+right-click either to choose 0.2, 0.5, 1, 2, or 4 Hz, or Quit. The selection
+controls the shared sampler, applies to both items, and lasts for the current
+run (default: 1 Hz). MEM reports in-use RAM, not a pressure percentage.
+
+Ownership and data flow:
+
+- `src/sampling.rs` is shared by the TUI and the C bridge. Its single joined
+  worker owns the native handles, primes counters, and collects at 1 Hz by
+  default. Its latest-only slot bounds delivery.
+- `src/ffi.rs` and `macos/Sources/CMactop/include/mactop.h` define the internal
+  typed C interface. The handle retains its snapshot; exported arrays and UTF-8
+  strings borrow that storage until the next poll or destruction. Calls on one
+  handle must be serialized. Frequencies use NaN for unavailable readings; no
+  strings, processes, core tiers, or clocks are silently omitted by the bridge.
+- `MetricsCore` copies those views into owned, immutable `Sendable` Swift
+  values before polling again. It preserves monotonic timestamps, sequence,
+  reset/delay flags, and unavailable frequencies. This is an internal interface,
+  not a versioned SDK or a plugin API.
+- `MonitorStore` owns one background Swift task for the sampler's complete
+  lifetime. Only owned readings/errors cross to MainActor. Both status items
+  share that store. Startup failures retry after five seconds; measurement
+  errors retain the last good reading and retry on subsequent polls. Rate
+  changes interrupt the current wait and reschedule collection without resetting
+  counters. A poll just ahead of collection retries after 50 ms instead of
+  waiting another full interval. No delivery for three intervals (at least
+  three seconds) marks the reading stale. Unexpected worker termination is
+  surfaced, but requires restarting the app rather than silently rebuilding it.
+- Quit cancels and awaits the task; deferred bridge destruction stops/joins
+  Rust's worker before AppKit receives permission to terminate. Programmatic
+  quit is scheduled outside the current Swift executor job so AppKit's nested
+  termination loop cannot block that shutdown.
+
+The popover host follows Veil's fitting-size update on every layout, including
+loading → data → error → recovery while the same popover stays open. Debug builds
+can capture the actual popover with ScreenCaptureKit (macOS 14.4+):
+
+```sh
+./scripts/build-app
+macos/.build/Mactop.app/Contents/MacOS/Mactop \
+  --demo --capture /tmp/mactop-cpu.png --panel cpu --appearance light --check-transitions
+```
+
+Use `--panel memory` or `--appearance dark` for the other views. Omit `--demo`
+for native readings. Transition checking injects an explicitly labelled UI
+error, not a native collector fault; it saves loading, error and recovered
+captures alongside the requested PNG and checks that the open window grows and
+shrinks. Add `--capture-menu` to capture the actual frequency menu, exercise its
+slow/fast actions against collection, and verify both items share the selection.
+Capture tooling is excluded from release builds. The normal app needs neither
+screen-recording nor Accessibility permissions.
+
 ## Check
 
 ```sh
 cargo test
 cargo clippy --all-targets -- -D warnings
 cargo fmt --check
+./scripts/build-app
+swift test --package-path macos
+xcrun swift-format lint --strict --recursive macos/Sources macos/Tests
 ```
+
+The command-line-only Swift 6.4 beta toolchain on the development host currently
+requires its installed Testing macro plugin to be loaded explicitly. With that
+toolchain, replace the `swift test` command with:
+
+```sh
+toolchain="$(dirname "$(dirname "$(xcrun --find swift)")")"
+swift test --package-path macos \
+  -Xswiftc -load-plugin-library \
+  -Xswiftc "$toolchain/lib/swift/host/plugins/testing/libTestingMacros.dylib"
+```
+
+The native app has been run on the same M4 Pro with macOS 27; macOS 14 is the
+deployment target, not an additional hardware/OS validation claim.

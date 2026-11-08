@@ -31,6 +31,9 @@ SOFTWARE.
 
 ## Other references
 
+- [Veil](https://github.com/victhorio/veil): native menu-bar ownership, AppKit/
+  SwiftUI popover hosting and sizing, and development window-capture workflow.
+  Shared code is MIT-licensed, copyright 2026 Victhor Sartório, as in [LICENSE](LICENSE).
 - [btop](https://github.com/aristocratos/btop): terminal-monitor inspiration and
   performance comparisons.
 - [socpowerbud](https://github.com/dehydratedpotato/socpowerbud): cross-checking

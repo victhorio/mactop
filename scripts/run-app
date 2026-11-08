@@ -1,0 +1,5 @@
+#!/bin/bash
+set -euo pipefail
+root="$(dirname "$(dirname "$(realpath "$0")")")"
+"$root/scripts/build-app"
+open "$root/macos/.build/Mactop.app" --args "$@"

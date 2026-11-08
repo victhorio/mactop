@@ -6,6 +6,9 @@ description = "A CPU and memory-first terminal monitor for Apple Silicon"
 license = "MIT"
 publish = false
 
+[lib]
+crate-type = ["rlib", "staticlib"]
+
 [dependencies]
 compact_str = "0.9"
 crossterm = "0.29"

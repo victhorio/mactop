@@ -5,7 +5,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use mactop::{
+use crate::{
     app::{DEFAULT_INTERVAL, Update},
     metrics::{MetricsSource, MockSource},
 };
@@ -66,7 +66,7 @@ impl Schedule {
 enum Source {
     Demo(MockSource),
     #[cfg(target_os = "macos")]
-    Live(Box<mactop::metrics::MacSource>),
+    Live(Box<crate::metrics::MacSource>),
 }
 
 impl Source {
@@ -76,7 +76,7 @@ impl Source {
         }
         #[cfg(target_os = "macos")]
         {
-            Ok(Self::Live(Box::new(mactop::metrics::MacSource::new()?)))
+            Ok(Self::Live(Box::new(crate::metrics::MacSource::new()?)))
         }
         #[cfg(not(target_os = "macos"))]
         {

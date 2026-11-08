@@ -1,0 +1,14 @@
+#!/bin/bash
+set -euo pipefail
+root="$(dirname "$(dirname "$(realpath "$0")")")"
+configuration="${1:-debug}"
+MACOSX_DEPLOYMENT_TARGET=14.0 cargo build --manifest-path "$root/Cargo.toml" --release --lib
+swift build --package-path "$root/macos" --configuration "$configuration"
+binary_directory="$(swift build --package-path "$root/macos" --configuration "$configuration" --show-bin-path)"
+bundle="$root/macos/.build/Mactop.app"
+mkdir -p "$bundle/Contents/MacOS" "$bundle/Contents/Resources"
+cp "$binary_directory/MactopApp" "$bundle/Contents/MacOS/Mactop"
+cp "$root/macos/Resources/Info.plist" "$bundle/Contents/Info.plist"
+cp "$root/LICENSE" "$root/THIRD_PARTY_NOTICES.md" "$bundle/Contents/Resources/"
+codesign --force --sign - "$bundle"
+printf '%s\n' "$bundle"
