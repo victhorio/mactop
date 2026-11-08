@@ -7,7 +7,7 @@ publish = false
 
 [dependencies]
 crossterm = "0.29"
-ratatui = { version = "0.30", default-features = false, features = ["crossterm", "crossterm_0_29"] }
+ratatui = { version = "0.30", default-features = false, features = ["crossterm", "crossterm_0_29", "layout-cache"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 libc = "0.2"

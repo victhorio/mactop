@@ -421,7 +421,7 @@ fn swap(frame: &mut Frame, area: Rect, app: &App) {
 
 fn processes(frame: &mut Frame, area: Rect, app: &App) {
     let mut processes: Vec<_> = app.snapshot.processes.iter().collect();
-    processes.sort_by(|a, b| {
+    processes.sort_unstable_by(|a, b| {
         match app.sort {
             Sort::Cpu => b.cpu_percent.total_cmp(&a.cpu_percent),
             Sort::Memory => b.resident_bytes.cmp(&a.resident_bytes),
@@ -460,7 +460,7 @@ fn processes(frame: &mut Frame, area: Rect, app: &App) {
     let table_rows = processes.iter().skip(offset).take(rows).map(|process| {
         let mut cells = vec![
             Cell::from(process.pid.to_string()).style(Style::default().fg(MUTED)),
-            Cell::from(process.name.clone()).style(Style::default().fg(FG)),
+            Cell::from(process.name.as_str()).style(Style::default().fg(FG)),
             Cell::from(format!("{:.1}", process.cpu_percent))
                 .style(Style::default().fg(if app.sort == Sort::Cpu { BLUE } else { MUTED })),
             Cell::from(memory_size(process.resident_bytes))

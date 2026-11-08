@@ -45,6 +45,25 @@ pub struct HistorySample {
 }
 
 impl History {
+    fn push(&mut self, snapshot: &Snapshot, at: Instant, continuous: bool) {
+        self.samples.push_back(HistorySample {
+            at,
+            continuous,
+            cpu: snapshot
+                .cpu
+                .iter()
+                .map(|tier| (tier.kind, tier.active_percent()))
+                .collect(),
+            memory_used: snapshot.memory.used_percent(),
+            swap_in: snapshot.memory.swap_in_bytes_per_sec,
+            swap_out: snapshot.memory.swap_out_bytes_per_sec,
+        });
+        // Keep one predecessor so intervals crossing the left edge can be clipped.
+        while self.samples.len() > 1 && at.duration_since(self.samples[1].at) >= HISTORY_WINDOW {
+            self.samples.pop_front();
+        }
+    }
+
     pub fn points(&self) -> impl Iterator<Item = (f64, &HistorySample)> {
         let latest = self.samples.back().map(|sample| sample.at);
         self.samples.iter().map(move |sample| {
@@ -73,7 +92,7 @@ pub struct App {
 impl App {
     pub fn new(snapshot: Snapshot, at: Instant) -> Self {
         let mut app = Self {
-            snapshot: snapshot.clone(),
+            snapshot,
             history: History::default(),
             paused: false,
             expanded: false,
@@ -86,7 +105,7 @@ impl App {
             last_sequence: 0,
             disconnected: false,
         };
-        app.ingest(snapshot, at, false);
+        app.history.push(&app.snapshot, at, false);
         app
     }
 
@@ -150,24 +169,8 @@ impl App {
         if !same_topology {
             self.history = History::default();
         }
-        self.history.samples.push_back(HistorySample {
-            at,
-            continuous: continuous && same_topology,
-            cpu: snapshot
-                .cpu
-                .iter()
-                .map(|tier| (tier.kind, tier.active_percent()))
-                .collect(),
-            memory_used: snapshot.memory.used_percent(),
-            swap_in: snapshot.memory.swap_in_bytes_per_sec,
-            swap_out: snapshot.memory.swap_out_bytes_per_sec,
-        });
-        // Keep one predecessor so intervals crossing the left edge can be clipped.
-        while self.history.samples.len() > 1
-            && at.duration_since(self.history.samples[1].at) >= HISTORY_WINDOW
-        {
-            self.history.samples.pop_front();
-        }
+        self.history
+            .push(&snapshot, at, continuous && same_topology);
         self.snapshot = snapshot;
     }
 

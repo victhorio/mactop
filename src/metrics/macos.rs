@@ -22,6 +22,7 @@ pub struct MacSource {
     page_size: u64,
     timebase_ns: f64,
     previous_swap: Option<(Instant, u64, u64)>,
+    pids: Vec<i32>,
     previous_processes: HashMap<u32, ProcessCounter>,
 }
 
@@ -45,6 +46,10 @@ impl MacSource {
         if unsafe { mach_timebase_info(&mut timebase) } != 0 || timebase.denom == 0 {
             return Err(io::Error::other("cannot read the Mach CPU timebase"));
         }
+        let process_count = unsafe { libc::proc_listallpids(std::ptr::null_mut(), 0) };
+        if process_count <= 0 {
+            return Err(io::Error::last_os_error());
+        }
         Ok(Self {
             cpu,
             host: unsafe { mach_host_self() },
@@ -53,6 +58,7 @@ impl MacSource {
             page_size: page_size as u64,
             timebase_ns: timebase.numer as f64 / timebase.denom as f64,
             previous_swap: None,
+            pids: vec![0; process_count as usize + 64],
             previous_processes: HashMap::new(),
         })
     }
@@ -131,30 +137,24 @@ impl MacSource {
     }
 
     fn processes(&mut self) -> io::Result<Vec<Process>> {
-        let required = unsafe { libc::proc_listallpids(std::ptr::null_mut(), 0) };
-        if required <= 0 {
-            return Err(io::Error::last_os_error());
-        }
-        let mut pids = vec![0i32; required as usize + 64];
-        loop {
+        let count = loop {
             let count = unsafe {
                 libc::proc_listallpids(
-                    pids.as_mut_ptr().cast(),
-                    size_of_val(pids.as_slice()) as i32,
+                    self.pids.as_mut_ptr().cast(),
+                    size_of_val(self.pids.as_slice()) as i32,
                 )
             };
             if count <= 0 {
                 return Err(io::Error::last_os_error());
             }
-            if (count as usize) < pids.len() {
-                pids.truncate(count as usize);
-                break;
+            if (count as usize) < self.pids.len() {
+                break count as usize;
             }
-            pids.resize(pids.len() * 2, 0);
-        }
-        let mut counters = HashMap::with_capacity(pids.len());
-        let mut processes = Vec::with_capacity(pids.len());
-        for pid in pids.into_iter().filter(|pid| *pid > 0) {
+            self.pids.resize(self.pids.len() * 2, 0);
+        };
+        let observed_since = Instant::now();
+        let mut processes = Vec::with_capacity(self.previous_processes.len());
+        for pid in self.pids[..count].iter().copied().filter(|pid| *pid > 0) {
             let mut info = MaybeUninit::<libc::proc_taskallinfo>::zeroed();
             let size = size_of::<libc::proc_taskallinfo>() as i32;
             if unsafe {
@@ -171,23 +171,28 @@ impl MacSource {
                 continue;
             }
             let info = unsafe { info.assume_init() };
-            let now = ProcessCounter {
-                started: (info.pbsd.pbi_start_tvsec, info.pbsd.pbi_start_tvusec),
-                cpu_ticks: info
-                    .ptinfo
-                    .pti_total_user
-                    .saturating_add(info.ptinfo.pti_total_system),
-                at: Instant::now(),
-            };
+            let started = (info.pbsd.pbi_start_tvsec, info.pbsd.pbi_start_tvusec);
+            let cpu_ticks = info
+                .ptinfo
+                .pti_total_user
+                .saturating_add(info.ptinfo.pti_total_system);
+            let at = Instant::now();
             let cpu_percent = self
                 .previous_processes
-                .get(&(pid as u32))
-                .filter(|old| old.started == now.started)
+                .insert(
+                    pid as u32,
+                    ProcessCounter {
+                        started,
+                        cpu_ticks,
+                        at,
+                    },
+                )
+                .filter(|old| old.started == started)
                 .map_or(0.0, |old| {
                     rate(
-                        now.cpu_ticks,
+                        cpu_ticks,
                         old.cpu_ticks,
-                        now.at.duration_since(old.at).as_secs_f64(),
+                        at.duration_since(old.at).as_secs_f64(),
                     ) * self.timebase_ns
                         / 1e7
                 });
@@ -196,23 +201,24 @@ impl MacSource {
             } else {
                 &info.pbsd.pbi_name[..]
             };
-            let name: Vec<u8> = name
-                .iter()
-                .take_while(|c| **c != 0)
-                .map(|c| *c as u8)
-                .collect();
+            let name =
+                unsafe { std::slice::from_raw_parts(name.as_ptr().cast::<u8>(), name.len()) };
+            let name = &name[..name.iter().position(|&c| c == 0).unwrap_or(name.len())];
+            let mut sanitized = String::with_capacity(name.len());
+            sanitized.extend(
+                String::from_utf8_lossy(name)
+                    .chars()
+                    .map(|c| if c.is_control() { ' ' } else { c }),
+            );
             processes.push(Process {
                 pid: pid as u32,
-                name: String::from_utf8_lossy(&name)
-                    .chars()
-                    .map(|c| if c.is_control() { ' ' } else { c })
-                    .collect(),
+                name: sanitized,
                 cpu_percent,
                 resident_bytes: info.ptinfo.pti_resident_size,
             });
-            counters.insert(pid as u32, now);
         }
-        self.previous_processes = counters;
+        self.previous_processes
+            .retain(|_, counter| counter.at >= observed_since);
         Ok(processes)
     }
 }
