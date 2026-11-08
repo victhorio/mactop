@@ -129,9 +129,10 @@ collection. See [third-party notices](../THIRD_PARTY_NOTICES.md) for macmon attr
 
 The native app is a SwiftPM package under `macos/`, requiring macOS 14+, Apple
 Silicon, and Swift 6.2+. It uses AppKit for the application/status-item/popover
-lifecycle and SwiftUI for deliberately basic detail views. No Xcode project,
-third-party Swift dependencies, web view, server, or measurement subprocess is
-involved. The TUI's entry point and commands remain unchanged.
+lifecycle, SwiftUI for the detail views, and Apple's Swift Charts for CPU
+history. No Xcode project, third-party Swift dependencies, web view, server, or
+measurement subprocess is involved. The TUI's entry point and commands remain
+unchanged.
 
 ```sh
 ./scripts/run-app             # build and open, live readings
@@ -145,6 +146,17 @@ login item, or enable a privileged helper. Left-click CPU or MEM for details;
 right-click either to choose 0.2, 0.5, 1, 2, or 4 Hz, or Quit. The selection
 controls the shared sampler, applies to both items, and lasts for the current
 run (default: 1 Hz). MEM reports in-use RAM, not a pressure percentage.
+
+The 312 pt popovers omit redundant titles and lead with CPU activity or available
+memory percentage. CPU places its fixed 60-second trend beside the reading,
+with 10 pt core cells below: green efficiency, blue performance, pink Super.
+Cells wrap instead of stretching; interval/max clocks and individual core values
+are available on hover. Memory has a compact capacity strip, a three-column
+app/wired/compressed key, and inline swap usage. Capacity, cache/free, pressure,
+swap allocation and paging rates are available on hover; elevated or critical
+pressure also shows a warning, without a normal-state badge. Both show four
+processes, with application icons where available. Quit stays in the right-click
+menu.
 
 Ownership and data flow:
 
@@ -166,9 +178,14 @@ Ownership and data flow:
   errors retain the last good reading and retry on subsequent polls. Rate
   changes interrupt the current wait and reschedule collection without resetting
   counters. A poll just ahead of collection retries after 50 ms instead of
-  waiting another full interval. No delivery for three intervals (at least
-  three seconds) marks the reading stale. Unexpected worker termination is
-  surfaced, but requires restarting the app rather than silently rebuilding it.
+  waiting another full interval. Delivery waits use monotonic deadlines so view
+  updates do not add to the selected interval. No delivery for three intervals
+  (at least three seconds) marks the reading stale. Unexpected worker termination
+  is surfaced, but requires restarting the app rather than silently rebuilding it.
+- CPU history uses the sampler's monotonic timestamps, retaining the last
+  minute and one left-edge predecessor. Errors, missed sequences and delayed
+  samples break the line; restarts clear it. Rate changes preserve the time
+  scale. Startup history is blank until measured, and stale history freezes.
 - Quit cancels and awaits the task; deferred bridge destruction stops/joins
   Rust's worker before AppKit receives permission to terminate. Programmatic
   quit is scheduled outside the current Swift executor job so AppKit's nested
@@ -190,6 +207,7 @@ error, not a native collector fault; it saves loading, error and recovered
 captures alongside the requested PNG and checks that the open window grows and
 shrinks. Add `--capture-menu` to capture the actual frequency menu, exercise its
 slow/fast actions against collection, and verify both items share the selection.
+Add `--capture-history` to wait for a full minute of measured CPU history.
 Capture tooling is excluded from release builds. The normal app needs neither
 screen-recording nor Accessibility permissions.
 

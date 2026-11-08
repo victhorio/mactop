@@ -49,6 +49,24 @@
             try await Self.capture(window, to: path)
             throw CollectionPreviewError(store.error ?? "No reading arrived within ten seconds.")
           }
+          if arguments.contains("--capture-history") {
+            let deadline = ContinuousClock.now + .seconds(70)
+            while (store.cpuHistory.last?.time ?? 0) < 60 && .now < deadline {
+              try await Task.sleep(for: .milliseconds(100))
+            }
+            guard let latest = store.cpuHistory.last, latest.time >= 60 else {
+              throw CollectionPreviewError("A minute of CPU history did not arrive.")
+            }
+            print(
+              "60-second history: \(store.cpuHistory.count) samples, latest at \(latest.time), "
+                + "sequence \(latest.id)")
+            for (previous, next) in zip(store.cpuHistory, store.cpuHistory.dropFirst())
+            where previous.segment != next.segment {
+              print(
+                "History break: sequence \(previous.id) → \(next.id), "
+                  + "time \(previous.time) → \(next.time)")
+            }
+          }
           try await Task.sleep(for: .milliseconds(300))
           try await Self.capture(window, to: path)
           let populatedSize = window.frame.size
