@@ -1,11 +1,11 @@
 // Native channel discovery follows macmon's MIT-licensed IOReport research.
 // See THIRD_PARTY_NOTICES.md. IOReport is a private Apple API; validate its output.
 use std::{
-    collections::BTreeMap,
     ffi::{CStr, CString, c_void},
     io, ptr,
 };
 
+use compact_str::CompactString;
 use core_foundation_sys::{array::*, base::*, data::*, dictionary::*, string::*};
 
 use super::{sysctl, sysctl_string};
@@ -49,7 +49,7 @@ struct Tier {
 
 #[derive(Default)]
 struct CoreResidency {
-    name: String,
+    name: CompactString,
     active: f64,
     total: f64,
     weighted: f64,
@@ -79,42 +79,49 @@ impl CoreResidency {
 }
 
 impl Tier {
-    fn reading(&self, residencies: Vec<CoreResidency>) -> io::Result<CpuTier> {
-        let mut cores = BTreeMap::new();
-        for core in residencies {
-            if core.total <= 0.0 {
-                return Err(io::Error::other("CPU residency interval unavailable"));
-            }
-            let weighted = if core.active_states == self.frequencies.len() {
-                core.weighted
-            } else {
-                f64::NAN
-            };
-            if cores
-                .insert(core.name, (core.active, core.total, weighted))
-                .is_some()
-            {
-                return Err(io::Error::other("duplicate native CPU channel"));
-            }
+    fn reading(&self, mut residencies: Vec<CoreResidency>) -> io::Result<CpuTier> {
+        // Only duplicates before the first invalid interval take precedence over it.
+        let valid_count = residencies
+            .iter()
+            .position(|core| core.total <= 0.0)
+            .unwrap_or(residencies.len());
+        let valid = &mut residencies[..valid_count];
+        valid.sort_unstable_by(|a, b| a.name.cmp(&b.name));
+        if valid.windows(2).any(|pair| pair[0].name == pair[1].name) {
+            return Err(io::Error::other("duplicate native CPU channel"));
         }
-        if cores.len() != self.count {
+        if valid_count != residencies.len() {
+            return Err(io::Error::other("CPU residency interval unavailable"));
+        }
+        if residencies.len() != self.count {
             return Err(io::Error::other(format!(
                 "{}: expected {} core channels, received {}",
                 self.kind.label(),
                 self.count,
-                cores.len()
+                residencies.len()
             )));
         }
-        let active: f64 = cores.values().map(|c| c.0).sum();
-        let weighted: f64 = cores.values().map(|c| c.2).sum();
-        let mut ordered: Vec<_> = cores.into_iter().collect();
-        ordered.sort_by_key(|(name, _)| core_order(name, self.family));
+        let active: f64 = residencies.iter().map(|core| core.active).sum();
+        let weighted: f64 = residencies
+            .iter()
+            .map(|core| {
+                if core.active_states == self.frequencies.len() {
+                    core.weighted
+                } else {
+                    f64::NAN
+                }
+            })
+            .sum();
+        residencies.sort_unstable_by(|a, b| {
+            core_order(&a.name, self.family)
+                .cmp(&core_order(&b.name, self.family))
+                .then_with(|| a.name.cmp(&b.name))
+        });
         Ok(CpuTier {
             kind: self.kind,
-            cores: ordered
+            cores: residencies
                 .iter()
-                .map(|(_, value)| value)
-                .map(|c| (100.0 * c.0 / c.1).clamp(0.0, 100.0))
+                .map(|core| (100.0 * core.active / core.total).clamp(0.0, 100.0))
                 .collect(),
             frequency_ghz: (active > 0.0 && weighted.is_finite()).then(|| weighted / active),
             max_frequency_ghz: self.frequencies.last().copied(),
@@ -246,7 +253,7 @@ impl Cpu {
                 return Err(io::Error::other("unsupported CPU state count"));
             }
             let mut core = CoreResidency {
-                name: name.to_owned(),
+                name: name.into(),
                 ..CoreResidency::default()
             };
             for i in 0..count {
@@ -518,7 +525,7 @@ mod tests {
                 .iter()
                 .map(|(name, residencies)| {
                     let mut core = CoreResidency {
-                        name: (*name).to_string(),
+                        name: (*name).into(),
                         ..CoreResidency::default()
                     };
                     for (state, &residency) in ["DOWN", "IDLE", "V0P0", "V1P0"]

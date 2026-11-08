@@ -5,7 +5,7 @@ use ratatui::{
     text::{Line, Span},
     widgets::{
         Block, Borders, Cell, Clear, Padding, Paragraph, Row, Table,
-        canvas::{Canvas, Line as PlotLine, Points},
+        canvas::{Canvas, Line as PlotLine, Painter, Shape},
     },
 };
 
@@ -718,40 +718,48 @@ fn line_chart(frame: &mut Frame, area: Rect, history: &History, color: Color) {
     if area.is_empty() {
         return;
     }
-    let points: Vec<_> = history
-        .points()
-        .map(|(x, sample)| (x, sample.memory_used, sample.continuous))
-        .collect();
-    let visible: Vec<_> = points
-        .iter()
-        .filter(|p| p.0 >= 0.0)
-        .map(|p| (p.0, p.1))
-        .collect();
     let canvas = Canvas::default()
         .background_color(BG)
         .x_bounds([0.0, HISTORY_WINDOW.as_secs_f64()])
         .y_bounds([0.0, 100.0])
-        .paint(|ctx| {
-            ctx.draw(&Points::new(&visible, color));
-            for pair in points.windows(2) {
-                if !pair[1].2 || pair[1].0 < 0.0 {
-                    continue;
-                }
-                let (mut x1, mut y1, _) = pair[0];
-                if x1 < 0.0 {
-                    y1 += (pair[1].1 - y1) * -x1 / (pair[1].0 - x1);
-                    x1 = 0.0;
-                }
-                ctx.draw(&PlotLine {
-                    x1,
-                    y1,
-                    x2: pair[1].0,
-                    y2: pair[1].1,
-                    color,
-                });
-            }
-        });
+        .paint(|ctx| ctx.draw(&MemoryHistory { history, color }));
     frame.render_widget(canvas, area);
+}
+
+struct MemoryHistory<'a> {
+    history: &'a History,
+    color: Color,
+}
+
+impl Shape for MemoryHistory<'_> {
+    fn draw(&self, painter: &mut Painter) {
+        let mut previous: Option<(f64, f64)> = None;
+        for (x, sample) in self.history.points() {
+            let y = sample.memory_used;
+            if x >= 0.0 {
+                if let Some((column, row)) = painter.get_point(x, y) {
+                    painter.paint(column, row, self.color);
+                }
+                if sample.continuous
+                    && let Some((mut x1, mut y1)) = previous
+                {
+                    if x1 < 0.0 {
+                        y1 += (y - y1) * -x1 / (x - x1);
+                        x1 = 0.0;
+                    }
+                    PlotLine {
+                        x1,
+                        y1,
+                        x2: x,
+                        y2: y,
+                        color: self.color,
+                    }
+                    .draw(painter);
+                }
+            }
+            previous = Some((x, y));
+        }
+    }
 }
 
 fn tier_color(kind: TierKind) -> Color {
